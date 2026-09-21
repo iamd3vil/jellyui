@@ -746,7 +746,116 @@ impl Jellyui {
         }
     }
 
+    // ----- user data --------------------------------------------------------
+
+    /// Flips the watched state of the item shown on the detail page.
+    pub fn toggle_played(&mut self, cx: &mut Context<Self>) {
+        let Page::Detail(data) = &self.page else {
+            return;
+        };
+        let item_id = data.item.id.clone();
+        let played = !data.item.user_data.played;
+        let generation = self.generation;
+        self.fetch(
+            cx,
+            move |client| client.set_played(&item_id, played),
+            move |this, result, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                match result {
+                    Ok(user_data) => {
+                        if let Page::Detail(data) = &mut this.page {
+                            data.item.user_data = user_data;
+                            if data.item.is_series() {
+                                // Episodes and season counts changed server-side too.
+                                this.load_page(cx);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        this.toast("Could not update watched state", format!("{err:#}"), cx)
+                    }
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    /// Flips the favorite state of the item shown on the detail page.
+    pub fn toggle_favorite(&mut self, cx: &mut Context<Self>) {
+        let Page::Detail(data) = &self.page else {
+            return;
+        };
+        let item_id = data.item.id.clone();
+        let favorite = !data.item.user_data.is_favorite;
+        let generation = self.generation;
+        self.fetch(
+            cx,
+            move |client| client.set_favorite(&item_id, favorite),
+            move |this, result, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                match result {
+                    Ok(user_data) => {
+                        if let Page::Detail(data) = &mut this.page {
+                            data.item.user_data = user_data;
+                        }
+                    }
+                    Err(err) => this.toast("Could not update favorite", format!("{err:#}"), cx),
+                }
+                cx.notify();
+            },
+        );
+    }
+
     // ----- playback ---------------------------------------------------------
+
+    /// Plays the next unwatched episode of a series, or the first episode
+    /// when everything has been watched.
+    pub fn play_series(&mut self, series: &Item, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(client) = self.session.as_ref().map(|s| s.client.clone()) else {
+            return;
+        };
+        let series_id = series.id.clone();
+        let generation = self.generation;
+        cx.spawn_in(window, async move |this, cx| {
+            let result: Result<Option<Item>> = cx
+                .background_executor()
+                .spawn(async move {
+                    if let Some(next) = client.series_next_up(&series_id)? {
+                        return Ok(Some(next));
+                    }
+                    let seasons = client.seasons(&series_id)?;
+                    let Some(first) = seasons
+                        .iter()
+                        .find(|s| s.index_number != Some(0))
+                        .or_else(|| seasons.first())
+                    else {
+                        return Ok(None);
+                    };
+                    let episodes = client.episodes(&series_id, &first.id)?;
+                    Ok(episodes.into_iter().next())
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                match result {
+                    Ok(Some(episode)) => {
+                        let resume = episode.resume_secs() > 0;
+                        this.play(&episode, resume, window, cx);
+                    }
+                    Ok(None) => this.toast("Nothing to play", "This series has no episodes.", cx),
+                    Err(err) => this.toast("Could not start playback", format!("{err:#}"), cx),
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
 
     pub fn play(&mut self, item: &Item, resume: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = &self.session else { return };

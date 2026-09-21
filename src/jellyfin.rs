@@ -114,6 +114,29 @@ impl Client {
         Ok(response.into_body())
     }
 
+    /// Body-less request (POST/DELETE) that decodes a JSON response.
+    fn send<T: serde::de::DeserializeOwned>(
+        &self,
+        method: &str,
+        path: &str,
+        query: &[(&str, String)],
+    ) -> Result<T> {
+        let url = self.url(path, query);
+        let request = match method {
+            "DELETE" => self.agent.delete(&url).force_send_body(),
+            _ => self.agent.post(&url),
+        };
+        let mut response = request
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/json")
+            .send_empty()
+            .map_err(|e| map_err(e, path))?;
+        response
+            .body_mut()
+            .read_json::<T>()
+            .with_context(|| format!("decode {path}"))
+    }
+
     // ----- Discovery & auth -------------------------------------------------
 
     pub fn public_info(&self) -> Result<PublicSystemInfo> {
@@ -245,6 +268,43 @@ impl Client {
             ],
         )?;
         Ok(result.items)
+    }
+
+    /// The next unwatched episode of a series, if any.
+    pub fn series_next_up(&self, series_id: &str) -> Result<Option<Item>> {
+        let user = self.user()?.to_string();
+        let result: ItemsResult = self.get(
+            "/Shows/NextUp",
+            &[
+                ("userId", user),
+                ("seriesId", series_id.to_string()),
+                ("limit", "1".to_string()),
+                ("fields", ITEM_FIELDS.to_string()),
+            ],
+        )?;
+        Ok(result.items.into_iter().next())
+    }
+
+    // ----- User data --------------------------------------------------------
+
+    pub fn set_played(&self, item_id: &str, played: bool) -> Result<UserData> {
+        let user = self.user()?.to_string();
+        let method = if played { "POST" } else { "DELETE" };
+        self.send(
+            method,
+            &format!("/UserPlayedItems/{item_id}"),
+            &[("userId", user)],
+        )
+    }
+
+    pub fn set_favorite(&self, item_id: &str, favorite: bool) -> Result<UserData> {
+        let user = self.user()?.to_string();
+        let method = if favorite { "POST" } else { "DELETE" };
+        self.send(
+            method,
+            &format!("/UserFavoriteItems/{item_id}"),
+            &[("userId", user)],
+        )
     }
 
     // ----- Media URLs -------------------------------------------------------
@@ -446,6 +506,8 @@ pub struct UserData {
     pub playback_position_ticks: i64,
     #[serde(default)]
     pub played: bool,
+    #[serde(default)]
+    pub is_favorite: bool,
     #[serde(default)]
     pub unplayed_item_count: Option<i32>,
 }

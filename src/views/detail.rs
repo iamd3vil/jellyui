@@ -207,18 +207,59 @@ impl Jellyui {
                         })),
                 );
             }
-        }
-        if item.user_data.played {
+        } else if item.is_series() {
+            let target = item.clone();
             row = row.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .text_color(t.colors.muted_foreground)
-                    .child(icon(LucideIcon::CircleCheck, 16., t.colors.primary))
-                    .child("Watched"),
+                Button::new("detail.play-series")
+                    .size(ButtonSize::Lg)
+                    .child(icon(LucideIcon::Play, 16., t.colors.primary_foreground))
+                    .label("Play")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.play_series(&target, window, cx)
+                    })),
             );
         }
+
+        let played = item.user_data.played;
+        row = row.child(
+            Button::new("detail.watched")
+                .variant(ButtonVariant::Secondary)
+                .size(ButtonSize::Lg)
+                .aria_label(if played {
+                    "Mark as unwatched"
+                } else {
+                    "Mark as watched"
+                })
+                .child(if played {
+                    icon(LucideIcon::CircleCheck, 16., t.colors.primary)
+                } else {
+                    icon(LucideIcon::Check, 16., t.colors.secondary_foreground)
+                })
+                .label(if played { "Watched" } else { "Mark watched" })
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_played(cx))),
+        );
+
+        let favorite = item.user_data.is_favorite;
+        row = row.child(
+            Button::new("detail.favorite")
+                .variant(ButtonVariant::Secondary)
+                .size(ButtonSize::IconLg)
+                .aria_label(if favorite {
+                    "Remove from favorites"
+                } else {
+                    "Add to favorites"
+                })
+                .child(icon(
+                    LucideIcon::Heart,
+                    16.,
+                    if favorite {
+                        t.colors.destructive
+                    } else {
+                        t.colors.secondary_foreground
+                    },
+                ))
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_favorite(cx))),
+        );
         row
     }
 
