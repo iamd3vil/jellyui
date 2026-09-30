@@ -4,9 +4,9 @@
 
 use gpui_icons::LucideIcon;
 use gpui_kit::{
-    Context, Div, InteractiveElement as _, ObjectFit, ParentElement as _, Stateful,
-    StatefulInteractiveElement as _, Styled, StyledImage as _, Window, canvas, div, img,
-    linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px,
+    Context, Div, InteractiveElement as _, MouseButton, MouseDownEvent, ObjectFit,
+    ParentElement as _, Stateful, StatefulInteractiveElement as _, Styled, StyledImage as _,
+    Window, canvas, div, img, linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px,
 };
 
 use crate::{
@@ -47,6 +47,7 @@ impl Jellyui {
         .size_full();
 
         let surface = div()
+            .id("player.surface")
             .relative()
             .flex_1()
             .min_h_0()
@@ -55,6 +56,7 @@ impl Jellyui {
             .items_center()
             .justify_center()
             .child(measure)
+            .on_click(cx.listener(|this, _, _, _| this.player.toggle_pause()))
             .when_some(self.current_frame.clone(), |el, frame| {
                 el.child(img(frame).size_full().object_fit(ObjectFit::Contain))
             })
@@ -121,6 +123,18 @@ impl Jellyui {
                 .child("Subtitles"),
         );
 
+        // Hitboxes don't block by default, so overlay clicks would reach the surface and
+        // toggle pause too. Swallow them here, keeping keyboard focus on the player.
+        fn swallow(
+            this: &mut Jellyui,
+            _: &MouseDownEvent,
+            window: &mut Window,
+            cx: &mut Context<Jellyui>,
+        ) {
+            window.focus(&this.player_focus, cx);
+            cx.stop_propagation();
+        }
+
         // Controls overlay the video and fade with pointer activity.
         let visibility = crate::ui::theme::transition_value(
             "player.controls-opacity",
@@ -138,6 +152,7 @@ impl Jellyui {
             .pt(px(28.))
             .pb(px(14.))
             .opacity(visibility)
+            .on_mouse_down(MouseButton::Left, cx.listener(swallow))
             .bg(linear_gradient(
                 180.,
                 linear_color_stop(gpui_kit::black().alpha(0.0), 0.0),
@@ -230,6 +245,7 @@ impl Jellyui {
             .opacity(visibility)
             .top(px(12.))
             .left(px(if fullscreen { 12. } else { 84. }))
+            .on_mouse_down(MouseButton::Left, cx.listener(swallow))
             .child(
                 Button::new("player.close")
                     .variant(ButtonVariant::Ghost)

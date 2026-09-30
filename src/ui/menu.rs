@@ -262,7 +262,10 @@ impl MenuState {
             self.close(true, window, cx);
             cx.emit(MenuEvent { path, checked });
             if let Some(handler) = item.handler {
-                handler(event, window, cx);
+                let event = event.clone();
+                window.defer(cx, move |window, cx| {
+                    handler(&event, window, cx);
+                });
             }
         }
     }
@@ -648,7 +651,7 @@ impl RenderOnce for Menu {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[gpui_kit::test]
+    use gpui_kit::AppContext as _;
     fn check_actions_toggle_and_radio_actions_select_one(cx: &mut gpui_kit::TestAppContext) {
         cx.update(super::super::theme::init);
         let window = cx.add_window(|_, cx| {
@@ -675,5 +678,32 @@ mod tests {
                 assert_eq!(menu.items[3].checked, Some(true));
             })
             .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn handlers_can_update_menu_after_activation(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(super::super::theme::init);
+        let window = cx.add_window(|_, cx| MenuState::new([], cx));
+        window
+            .update(cx, |menu, window, cx| {
+                let menu_handle = cx.weak_entity();
+                menu.set_items(
+                    [MenuItem::new("reset", "Reset").on_click(move |_, _, cx| {
+                        menu_handle
+                            .update(cx, |menu, cx| menu.set_items([], cx))
+                            .ok();
+                    })],
+                    cx,
+                );
+                menu.activate(0, 0, &ClickEvent::default(), window, cx);
+            })
+            .unwrap();
+
+        cx.run_until_parked();
+
+        assert!(
+            cx.read_window(&window, |menu, cx| menu.read(cx).items.is_empty())
+                .unwrap()
+        );
     }
 }
