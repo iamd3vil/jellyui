@@ -164,16 +164,22 @@ impl RenderOnce for Slider {
                     })
             })
             .child(
+                // The track owns the pointer mapping, so keep it as tall as the
+                // whole control; the visible bar is the thin indicator inside it.
+                // Otherwise clicks land in the padding around the bar and do
+                // nothing.
                 SliderTrack::new(&self.state)
                     .disabled(self.disabled)
                     .relative()
                     .w_full()
-                    .h(theme.space(1.))
+                    .h_full()
+                    .flex()
+                    .items_center()
                     .child(
                         SliderIndicator::new(&self.state)
                             .relative()
                             .w_full()
-                            .h_full()
+                            .h(theme.space(1.))
                             .rounded_full()
                             .bg(colors.muted)
                             .child(
@@ -182,9 +188,9 @@ impl RenderOnce for Slider {
                                     .w(relative(percent))
                                     .rounded_full()
                                     .bg(colors.primary),
-                            ),
-                    )
-                    .child(thumb),
+                            )
+                            .child(thumb),
+                    ),
             );
         apply_style(root, &self.style)
     }
@@ -200,4 +206,250 @@ fn update_value(state: &Entity<SliderState>, value: f32, window: &mut Window, cx
         state.set_value(value, window, cx);
         state.handle_release(cx);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::{
+        AppContext as _, Context, IntoElement, Modifiers, Render, Subscription, TestAppContext,
+        VisualTestContext, Window, WindowHandle, div, point, px,
+    };
+    use std::{cell::RefCell, rc::Rc};
+
+    struct Harness {
+        state: Entity<SliderState>,
+        releases: Rc<RefCell<Vec<f32>>>,
+        changes: Rc<RefCell<usize>>,
+        swallow: bool,
+        _sub: Subscription,
+    }
+
+    impl Harness {
+        fn new(cx: &mut Context<Self>, swallow: bool) -> Self {
+            let state = cx.new(|_| SliderState::new().min(0.).max(100.).step(1.));
+            let releases = Rc::new(RefCell::new(Vec::new()));
+            let changes = Rc::new(RefCell::new(0));
+            let (r, c) = (releases.clone(), changes.clone());
+            let _sub = cx.subscribe(&state, move |_, _, event: &SliderEvent, _| match event {
+                SliderEvent::Change(_) => *c.borrow_mut() += 1,
+                SliderEvent::Release(value) => r.borrow_mut().push(value.end()),
+            });
+            Self {
+                state,
+                releases,
+                changes,
+                swallow,
+                _sub,
+            }
+        }
+    }
+
+    impl Render for Harness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w(px(100.))
+                .h(px(24.))
+                // The player wraps its controls in a handler that swallows the
+                // mouse down, so make sure that doesn't eat the seek either.
+                .when(self.swallow, |el| {
+                    el.on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation()
+                    })
+                })
+                .child(Slider::new(&self.state))
+        }
+    }
+
+    fn harness(cx: &mut TestAppContext, swallow: bool) -> WindowHandle<Harness> {
+        cx.update(super::super::theme::init);
+        cx.add_window(move |_, cx| Harness::new(cx, swallow))
+    }
+
+    #[gpui_kit::test]
+    fn click_on_track_seeks_to_the_pointer(cx: &mut TestAppContext) {
+        let window = harness(cx, true);
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+
+        // Click in the middle of the track, away from the thumb at value 0.
+        visual.simulate_click(point(px(50.), px(10.)), Modifiers::default());
+
+        window
+            .update(cx, |harness, _, cx| {
+                assert!(
+                    !harness.releases.borrow().is_empty(),
+                    "clicking the track should emit a Release event (changes: {})",
+                    harness.changes.borrow()
+                );
+                let released = *harness.releases.borrow().last().unwrap();
+                assert!(
+                    (harness.state.read(cx).value().end() - 50.).abs() < 1.,
+                    "released value {released} should be near 50"
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn releasing_after_a_drag_still_seeks(cx: &mut TestAppContext) {
+        let window = harness(cx, true);
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+
+        // A real click almost always moves the pointer a pixel or two, which
+        // starts the track's drag before the button is released.
+        visual.simulate_mouse_down(
+            point(px(60.), px(10.)),
+            gpui_kit::MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.simulate_mouse_move(point(px(62.), px(10.)), None, Modifiers::default());
+        visual.simulate_mouse_move(point(px(64.), px(10.)), None, Modifiers::default());
+        visual.simulate_mouse_up(
+            point(px(64.), px(10.)),
+            gpui_kit::MouseButton::Left,
+            Modifiers::default(),
+        );
+
+        window
+            .update(cx, |harness, _, _| {
+                assert!(
+                    !harness.releases.borrow().is_empty(),
+                    "releasing a drag on the track should emit Release (changes: {})",
+                    harness.changes.borrow()
+                );
+            })
+            .unwrap();
+    }
+
+    /// Mirrors the player: a poll rebuilds the retained [`SliderState`] on a
+    /// short interval unless the slider reports that the user is scrubbing, and
+    /// a subscriber turns `Change` into "scrubbing" and `Release` into a seek.
+    struct PollHarness {
+        state: Entity<SliderState>,
+        scrubbing: bool,
+        seeks: Rc<RefCell<Vec<f32>>>,
+        resets: Rc<std::cell::Cell<usize>>,
+        _sub: Subscription,
+        _poll: gpui_kit::Task<()>,
+    }
+
+    impl PollHarness {
+        fn new(cx: &mut Context<Self>) -> Self {
+            let state = cx.new(|_| SliderState::new().min(0.).max(100.).step(1.));
+            let seeks = Rc::new(RefCell::new(Vec::new()));
+            let resets = Rc::new(std::cell::Cell::new(0));
+            let (seek_sink, reset_sink) = (seeks.clone(), resets.clone());
+            let _sub = cx.subscribe(&state, move |this, _, event: &SliderEvent, _| match event {
+                SliderEvent::Change(_) => this.scrubbing = true,
+                SliderEvent::Release(value) => {
+                    this.scrubbing = false;
+                    seek_sink.borrow_mut().push(value.end());
+                }
+            });
+            let poll_state = state.clone();
+            let _poll = cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(8))
+                        .await;
+                    let keep_going = this
+                        .update(cx, |this, cx| {
+                            if !this.scrubbing {
+                                reset_sink.set(reset_sink.get() + 1);
+                                poll_state.update(cx, |s, cx| {
+                                    *s = SliderState::new()
+                                        .min(0.)
+                                        .max(100.)
+                                        .step(1.)
+                                        .default_value(0.);
+                                    cx.notify();
+                                });
+                            }
+                            true
+                        })
+                        .unwrap_or(false);
+                    if !keep_going {
+                        break;
+                    }
+                }
+            });
+            Self {
+                state,
+                scrubbing: false,
+                seeks,
+                resets,
+                _sub,
+                _poll,
+            }
+        }
+    }
+
+    impl Render for PollHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().w(px(100.)).h(px(24.)).child(Slider::new(&self.state))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn click_near_the_track_still_seeks(cx: &mut TestAppContext) {
+        let window = harness(cx, false);
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+
+        // The control is 20px tall, but the visible bar is only 4px, centred.
+        // Click a few pixels above it, as a user aiming at the bar often does.
+        visual.simulate_click(point(px(50.), px(3.)), Modifiers::default());
+
+        window
+            .update(cx, |harness, _, _| {
+                let released = harness.releases.borrow().last().copied();
+                assert!(
+                    released.is_some_and(|v| (v - 50.).abs() < 5.),
+                    "clicking near the bar should seek to the pointer, got {released:?}"
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn click_seeks_while_the_player_poll_is_running(cx: &mut TestAppContext) {
+        cx.update(super::super::theme::init);
+        let window = cx.add_window(|_, cx| PollHarness::new(cx));
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+
+        visual.simulate_mouse_down(
+            point(px(50.), px(10.)),
+            gpui_kit::MouseButton::Left,
+            Modifiers::default(),
+        );
+        // Let several poll ticks elapse while the button is held down.
+        visual
+            .dispatcher
+            .advance_clock(std::time::Duration::from_millis(40));
+        visual.run_until_parked();
+        visual.simulate_mouse_up(
+            point(px(50.), px(10.)),
+            gpui_kit::MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+
+        window
+            .update(cx, |harness, _, _| {
+                assert!(
+                    !harness.seeks.borrow().is_empty(),
+                    "clicking the track should seek even while the poll runs (resets: {})",
+                    harness.resets.get()
+                );
+                let last = *harness.seeks.borrow().last().unwrap();
+                assert!(
+                    (last - 50.).abs() < 5.,
+                    "should seek near the click, got {last}"
+                );
+            })
+            .unwrap();
+    }
 }
