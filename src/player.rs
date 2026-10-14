@@ -26,7 +26,10 @@ use libmpv2::{
 use libmpv2_sys as sys;
 use serde::Deserialize;
 
-use crate::jellyfin::{Client, Progress, TICKS_PER_SECOND};
+use crate::{
+    jellyfin::{Client, Progress, TICKS_PER_SECOND},
+    keep_awake::KeepAwake,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum PlayState {
@@ -309,6 +312,7 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) -> Result<()> {
 
     let mut renderer = renderer;
     let mut session: Option<Session> = None;
+    let mut awake = KeepAwake::default();
 
     loop {
         // Events from mpv.
@@ -413,6 +417,11 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) -> Result<()> {
                     log::warn!("report progress failed: {err:#}");
                 }
             }
+        }
+
+        {
+            let status = shared.status.lock().unwrap();
+            awake.set(session.is_some() && status.state == PlayState::Playing && !status.paused);
         }
 
         // Video frame.

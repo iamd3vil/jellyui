@@ -4,6 +4,7 @@ mod app;
 mod config;
 mod images;
 mod jellyfin;
+mod keep_awake;
 mod player;
 #[allow(dead_code, unused_imports)]
 mod ui;

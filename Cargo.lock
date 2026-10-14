@@ -3674,6 +3674,7 @@ dependencies = [
  "ureq",
  "uuid",
  "web-time",
+ "zbus",
 ]
 
 [[package]]
