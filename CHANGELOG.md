@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 - 2026-10-17
+
+- Remembers the audio and subtitle tracks you pick for each video, through Jellyfin,
+  so they come back next time and carry over to other Jellyfin apps. Videos you
+  haven't played yet start with your Jellyfin language preferences.
+- Fixed progress reports clearing the tracks Jellyfin had remembered.
+- Install script: works on Apple Silicon Macs too, and on KDE the app menu shows
+  the icon right after installing.
+
 ## 0.3.0 - 2026-10-17
 
 - macOS: `Jellyui.app` in a drag-to-Applications `.dmg`.
