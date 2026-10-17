@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0 - 2026-10-17
+
+- Up next: the next episode is offered in the corner for the last 20 seconds,
+  and the player stays on it when an episode finishes instead of closing.
+- Next episode button on episode pages.
+- Fixed a crash when clicking the seek bar during playback.
+- Fixed starting another item while one is playing: the old one now keeps its
+  watched progress, and the new one no longer closes the player or starts paused.
+
 ## 0.1.0 - 2026-10-17
 
 First release.
