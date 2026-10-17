@@ -279,7 +279,8 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) -> Result<()> {
         init.set_option("keep-open", "no")?;
         init.set_option("idle", "yes")?;
         init.set_option("terminal", "no")?;
-        init.set_option("ytdl", "no")?;
+        // Only exists in Lua-enabled builds; the static release build has no ytdl hook.
+        let _ = init.set_option("ytdl", "no");
         init.set_option("config", "no")?;
         init.set_option("sub-auto", "no")?;
         init.set_option("audio-display", "no")?;

@@ -24,6 +24,14 @@ run *ARGS:
 run-release:
     cargo run --release
 
+# Build libmpv and its dependencies as static libraries for release builds
+mpv-static:
+    scripts/build-mpv.sh
+
+# Package a release archive for this machine into dist/ without publishing (needs rlsr)
+release-snapshot:
+    rlsr --snapshot --rm-dist --split --targets "$(rustc -vV | sed -n 's/^host: //p')"
+
 # Run all tests, including the live libmpv playback round-trip (needs ffmpeg)
 test *ARGS:
     cargo test --bin jellyui {{ARGS}}
@@ -60,9 +68,11 @@ mpv-info:
     @cargo build 2>&1 | grep -i "libmpv" || echo "libmpv located automatically (see build.rs for the search order)"
     @command -v mpv >/dev/null && mpv --version | head -1 || echo "mpv binary not on PATH"
 
+config_file := if os() == "macos" { env_var("HOME") / "Library/Application Support/jellyui/config.json" } else { env_var_or_default("XDG_CONFIG_HOME", env_var("HOME") / ".config") / "jellyui/config.json" }
+
 # Remove the app's saved servers, profiles and tokens (asks first)
 reset-config:
-    @printf 'Delete %s? [y/N] ' "$HOME/Library/Application Support/jellyui/config.json"; read ans; [ "$ans" = y ] && rm -f "$HOME/Library/Application Support/jellyui/config.json" && echo removed || echo kept
+    @printf 'Delete %s? [y/N] ' "{{config_file}}"; read ans; [ "$ans" = y ] && rm -f "{{config_file}}" && echo removed || echo kept
 
 # Remove build artifacts
 clean:

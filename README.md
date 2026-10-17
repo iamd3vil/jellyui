@@ -20,18 +20,33 @@ video inside the window through an embedded [libmpv](https://mpv.io) core.
   playing; a now-playing bar brings it back.
 - **Dark and light appearance**, Geist typography, GPU-rendered UI.
 
-## Requirements
+## Install
+
+Download the archive for your platform from
+[Releases](https://github.com/iamd3vil/jellyui/releases), extract it and run `jellyui`.
+libmpv and its media libraries are linked into the binary, so nothing else needs to be
+installed.
+
+- **Linux x86_64**: glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later).
+  It also loads libasound, libpulse, libxcb and libxkbcommon, which desktop installs
+  already have.
+- **macOS Apple Silicon**: macOS 11 or newer. The binary is not signed, so clear the
+  quarantine flag once: `xattr -d com.apple.quarantine jellyui`.
+
+Verify a download with `sha256sum --check --ignore-missing checksums.txt`.
+
+## Building from source
 
 | Dependency | Notes |
 | --- | --- |
 | Rust 1.97+ | `rustup update stable` |
 | Xcode command line tools | macOS builds need the Metal toolchain |
-| libmpv 2.x | `brew install mpv` or the Nix `mpv` package |
+| libmpv 2.x | `brew install mpv`, your distro's `mpv`/`libmpv` package, or the Nix `mpv` package |
 | ffmpeg (optional) | Only for the playback test; it encodes a short clip |
 | [just](https://github.com/casey/just) (optional) | Task runner for the recipes below |
 
-Linux and Windows are supported by GPUI, gpui-kit and libmpv, but this app has only
-been run on macOS so far.
+Runs on macOS and Linux. Windows is supported by GPUI, gpui-kit and libmpv, but this
+app has not been run there yet.
 
 ## Quick start
 
@@ -46,9 +61,9 @@ with a single click next time.
 
 ### Where things are stored
 
-Servers, profiles and access tokens live in
-`~/Library/Application Support/jellyui/config.json`, written with owner-only
-permissions. Use `just reset-config` to forget everything.
+Servers, profiles and access tokens live in `jellyui/config.json` under the platform
+config directory (`~/Library/Application Support` on macOS, `~/.config` on Linux),
+written with owner-only permissions. Use `just reset-config` to forget everything.
 
 ### Finding libmpv
 
@@ -80,6 +95,21 @@ just lint
 just fmt
 ```
 
+### Releasing
+
+Release archives are built by [rlsr](https://rlsr.sarat.dev) from `rlsr.yml`, linking
+the static libmpv that `scripts/build-mpv.sh` compiles into `target/mpv-static`.
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds Linux and macOS on
+their own runners and publishes a GitHub release. Running the workflow by hand builds
+snapshot archives without publishing.
+
+To try a release build locally (the first `just mpv-static` takes a while):
+
+```sh
+just mpv-static
+just release-snapshot
+```
+
 ### Layout
 
 | Path | Purpose |
@@ -92,7 +122,9 @@ just fmt
 | `src/images.rs` | Remote artwork cache |
 | `src/config.rs` | Persisted servers, profiles and preferences |
 | `src/ui/` | gpuicn components installed as editable source (see below) |
-| `build.rs` | Locates libmpv for linking |
+| `build.rs` | Locates libmpv for linking, or links the static build |
+| `scripts/build-mpv.sh` | Builds libmpv and its dependencies as static libraries for releases |
+| `rlsr.yml`, `.github/workflows/release.yml` | Release packaging and CI |
 
 ### How playback works
 
@@ -126,6 +158,8 @@ in `Cargo.toml` aligned with the registry you install from.
   managed by Jellyfin are not loaded yet.
 - Music, books, live TV and photo libraries are hidden from the sidebar.
 - Transcoding is not requested; playback relies on mpv's broad direct-play support.
+- Linux release builds decode video in software; build from source against a system
+  libmpv for VA-API hardware decoding.
 
 ## License
 
@@ -133,4 +167,7 @@ Jellyui is free software under the [GNU Affero General Public License v3.0 or la
 
 Third-party components keep their own licenses: the bundled Geist fonts are under the
 SIL Open Font License (`assets/fonts/OFL.txt`), the gpuicn components in `src/ui` are
-MIT licensed, and libmpv is LGPL-2.1+ and linked dynamically.
+MIT licensed. Source builds link the system libmpv dynamically. Release binaries link
+libmpv, FFmpeg, libplacebo, libass, dav1d, Mbed TLS, FreeType, HarfBuzz, FriBidi and (on
+Linux) Fontconfig and Expat statically; their licenses ship in
+`THIRD-PARTY-LICENSES.txt` inside each archive.

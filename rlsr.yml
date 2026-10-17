@@ -1,0 +1,33 @@
+releases:
+  - name: "Release to GitHub"
+    dist_folder: "./dist"
+    targets:
+      github:
+        owner: "iamd3vil"
+        repo: "jellyui"
+    checksum:
+      algorithm: "sha256"
+    additional_files:
+      - "README.md"
+      - "CHANGELOG.md"
+      - "LICENSE"
+      - "assets/fonts/OFL.txt"
+      # Written by scripts/build-mpv.sh: licenses of the statically linked libraries.
+      - "target/mpv-static/THIRD-PARTY-LICENSES.txt"
+    builds:
+      # Each target builds natively on its own runner (see .github/workflows/release.yml)
+      # against the static libmpv from scripts/build-mpv.sh.
+      - name: "jellyui"
+        type: "rust"
+        archive_name: "jellyui-{{ meta.tag }}-{{ meta.os }}-{{ meta.arch }}"
+        archive_format: tar_gz
+        env:
+          - "MPV_STATIC_DIR=target/mpv-static"
+          # font-kit's fontconfig-sys links the same static fontconfig libass uses.
+          - "PKG_CONFIG_PATH={{ env.PWD }}/target/mpv-static/lib/pkgconfig"
+          - "FONTCONFIG_STATIC=1"
+        rust:
+          tool: "cargo build"
+          targets:
+            - "x86_64-unknown-linux-gnu"
+            - "aarch64-apple-darwin"
