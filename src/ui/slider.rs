@@ -195,6 +195,14 @@ impl RenderOnce for Slider {
         apply_style(root, &self.style)
     }
 }
+/// Sets the range end, step and value in place. Replacing the state would drop
+/// the track bounds recorded at paint, so a click before the next frame would
+/// map onto a zero-width track and yield NaN.
+pub fn set_range(state: &mut SliderState, max: f32, step: f32, value: f32) {
+    let old = std::mem::replace(state, SliderState::new());
+    *state = old.max(max).step(step).default_value(value);
+}
+
 fn update_value(state: &Entity<SliderState>, value: f32, window: &mut Window, cx: &mut App) {
     if !value.is_finite() {
         return;
@@ -359,11 +367,7 @@ mod tests {
                             if !this.scrubbing {
                                 reset_sink.set(reset_sink.get() + 1);
                                 poll_state.update(cx, |s, cx| {
-                                    *s = SliderState::new()
-                                        .min(0.)
-                                        .max(100.)
-                                        .step(1.)
-                                        .default_value(0.);
+                                    set_range(s, 100., 1., 0.);
                                     cx.notify();
                                 });
                             }
@@ -408,6 +412,33 @@ mod tests {
                 assert!(
                     released.is_some_and(|v| (v - 50.).abs() < 5.),
                     "clicking near the bar should seek to the pointer, got {released:?}"
+                );
+            })
+            .unwrap();
+    }
+
+    /// The player poll updates the state between frames. A click that lands
+    /// before the next paint must still map onto the track painted last.
+    #[gpui_kit::test]
+    fn click_right_after_a_poll_update_seeks(cx: &mut TestAppContext) {
+        let window = harness(cx, false);
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+
+        window
+            .update(cx, |harness, _, cx| {
+                harness.state.update(cx, |s, _| set_range(s, 100., 1., 10.))
+            })
+            .unwrap();
+        visual.simulate_click(point(px(50.), px(10.)), Modifiers::default());
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+
+        window
+            .update(cx, |harness, _, _| {
+                let released = harness.releases.borrow().last().copied();
+                assert!(
+                    released.is_some_and(|v| (v - 50.).abs() < 5.),
+                    "should seek near the click, got {released:?}"
                 );
             })
             .unwrap();

@@ -1004,11 +1004,7 @@ impl Jellyui {
                                 this.player_status.duration as f32,
                             );
                             this.seek_slider.update(cx, |s, cx| {
-                                *s = SliderState::new()
-                                    .min(0.)
-                                    .max(dur)
-                                    .step(1.)
-                                    .default_value(pos);
+                                crate::ui::slider::set_range(s, dur, 1., pos);
                                 cx.notify();
                             });
                         }
