@@ -68,6 +68,17 @@ jobs:
           rlsr_version: v0.11.0
           args: --split --targets ${{ matrix.target }}${{ github.ref_type != 'tag' && ' --snapshot' || '' }}
 
+      # rlsr hides make-dmg.sh's output, so check what users will get here.
+      - name: Check dmg
+        if: runner.os == 'macOS'
+        run: |
+          hdiutil attach -nobrowse -readonly -mountpoint /tmp/jellyui-dmg dist/*.dmg
+          ls -la /tmp/jellyui-dmg /tmp/jellyui-dmg/Jellyui.app/Contents/*/
+          plutil -p /tmp/jellyui-dmg/Jellyui.app/Contents/Info.plist
+          codesign --verify --strict --verbose=2 /tmp/jellyui-dmg/Jellyui.app
+          test -L /tmp/jellyui-dmg/Applications
+          hdiutil detach /tmp/jellyui-dmg
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-${{ matrix.target }}
