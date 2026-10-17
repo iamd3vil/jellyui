@@ -53,7 +53,16 @@ jobs:
         if: steps.mpv-cache.outputs.cache-hit != 'true'
         run: scripts/build-mpv.sh
 
-      - name: Build and package
+      # rlsr hides cargo's output when a build fails, so compile here first with the
+      # same env as rlsr.yml; rlsr's own cargo build is then a no-op that just packages.
+      - name: Compile
+        env:
+          MPV_STATIC_DIR: target/mpv-static
+          PKG_CONFIG_PATH: ${{ github.workspace }}/target/mpv-static/lib/pkgconfig
+          FONTCONFIG_STATIC: "1"
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
         uses: iamd3vil/rlsr/.github/actions/rlsr@d8b58a5eb7344bcd0434098396724533895feccb # v0.11.0
         with:
           rlsr_version: v0.11.0
