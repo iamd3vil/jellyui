@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 - 2026-10-17
+
+- macOS: `Jellyui.app` in a drag-to-Applications `.dmg`.
+- Linux: `scripts/install.sh` installs the release with a desktop launcher and icon, and
+  `--uninstall` removes it.
+- New app icon. On Linux the window now matches its launcher, so it shows the icon.
+
 ## 0.2.0 - 2026-10-17
 
 - Up next: the next episode is offered in the corner for the last 20 seconds,

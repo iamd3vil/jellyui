@@ -43,3 +43,6 @@ releases:
         artifact: "target/jellyui.dmg"
         archive_name: "jellyui-{{ meta.tag }}-darwin-arm64.dmg"
         no_archive: true
+changelog:
+  # Hand-written release-notes/<tag>.md, then the commits since the last tag.
+  template: "changelog.tpl"
