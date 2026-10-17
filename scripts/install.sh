@@ -94,6 +94,10 @@ refresh_caches() {
     if [ -f "$icons/icon-theme.cache" ] && command -v gtk-update-icon-cache >/dev/null 2>&1; then
         gtk-update-icon-cache -q -t "$icons" 2>/dev/null || true
     fi
+    # KDE apps (the Plasma menu included) cache icon lookups until told to reload.
+    if command -v dbus-send >/dev/null 2>&1; then
+        dbus-send --session --type=signal /KIconLoader org.kde.KIconLoader.iconChanged int32:0 2>/dev/null || true
+    fi
 }
 
 if [ "$uninstall" = 1 ]; then

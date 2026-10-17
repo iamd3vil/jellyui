@@ -27,7 +27,7 @@ use libmpv2_sys as sys;
 use serde::Deserialize;
 
 use crate::{
-    jellyfin::{Client, Progress, TICKS_PER_SECOND},
+    jellyfin::{Client, Progress, Streams, TICKS_PER_SECOND},
     keep_awake::KeepAwake,
 };
 
@@ -62,6 +62,9 @@ pub struct Track {
     pub forced: bool,
     #[serde(default)]
     pub external: bool,
+    /// FFmpeg's stream index, which Jellyfin's stream indexes follow.
+    #[serde(default)]
+    pub ff_index: Option<i64>,
 }
 
 impl Track {
@@ -256,6 +259,10 @@ struct Session {
     item_id: String,
     play_session_id: String,
     last_report: Instant,
+    /// The tracks Jellyfin picked, applied once the file has loaded.
+    defaults: Streams,
+    /// Tracks in the last progress report, to report a new choice right away.
+    reported: Streams,
 }
 
 struct Renderer {
@@ -325,6 +332,9 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) -> Result<()> {
             match event {
                 Ok(Event::EndFile(_)) if replaced_ends > 0 => replaced_ends -= 1,
                 Ok(event) => {
+                    if let (Event::FileLoaded, Some(active)) = (&event, &session) {
+                        select_tracks(&mpv, active.defaults);
+                    }
                     if handle_event(&event, &shared, &mut session) {
                         finish(&shared, &mut session);
                     }
@@ -378,11 +388,18 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) -> Result<()> {
                         status.state = PlayState::Ended;
                         continue;
                     }
+                    // Fetched while mpv opens the file.
+                    let defaults = req
+                        .client
+                        .default_streams(&req.item_id)
+                        .inspect_err(|err| log::warn!("track defaults lookup failed: {err:#}"))
+                        .unwrap_or_default();
                     let progress = Progress {
                         item_id: req.item_id.clone(),
                         play_session_id: uuid::Uuid::new_v4().to_string(),
                         position_ticks: req.start_secs * TICKS_PER_SECOND,
                         paused: false,
+                        streams: defaults,
                     };
                     if let Err(err) = req.client.report_start(&progress) {
                         log::warn!("report start failed: {err:#}");
@@ -392,6 +409,8 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) -> Result<()> {
                         item_id: req.item_id,
                         play_session_id: progress.play_session_id,
                         last_report: Instant::now(),
+                        defaults,
+                        reported: defaults,
                     });
                 }
                 Cmd::TogglePause => {
@@ -417,17 +436,24 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) -> Result<()> {
             }
         }
 
-        // Periodic progress reporting.
-        if let Some(active) = session.as_mut()
-            && active.last_report.elapsed() >= Duration::from_secs(10)
-        {
-            active.last_report = Instant::now();
-            let snapshot = shared.status.lock().unwrap().clone();
-            if snapshot.state == PlayState::Playing {
-                let progress = progress_of(active, snapshot.position, snapshot.paused);
+        // Periodic progress reporting, and right away when the tracks change:
+        // Jellyfin remembers the tracks from these reports.
+        if let Some(active) = session.as_mut() {
+            let status = shared.status.lock().unwrap();
+            let streams = selected_streams(&status.tracks);
+            let changed = !status.tracks.is_empty() && streams != active.reported;
+            let due = active.last_report.elapsed() >= Duration::from_secs(10);
+            if status.state == PlayState::Playing && (changed || due) {
+                let mut progress = progress_of(active, status.position, status.paused);
+                drop(status);
+                progress.streams = streams;
+                active.last_report = Instant::now();
+                active.reported = streams;
                 if let Err(err) = active.client.report_progress(&progress) {
                     log::warn!("report progress failed: {err:#}");
                 }
+            } else if due {
+                active.last_report = Instant::now();
             }
         }
 
@@ -607,6 +633,51 @@ fn progress_of(session: &Session, position: f64, paused: bool) -> Progress {
         play_session_id: session.play_session_id.clone(),
         position_ticks: (position * TICKS_PER_SECOND as f64) as i64,
         paused,
+        streams: Streams::default(),
+    }
+}
+
+/// The selected tracks as Jellyfin streams.
+fn selected_streams(tracks: &[Track]) -> Streams {
+    let selected = |kind: &str| tracks.iter().find(|t| t.kind == kind && t.selected);
+    Streams {
+        audio: selected("audio").and_then(|t| t.ff_index),
+        subtitle: match selected("sub") {
+            Some(track) => track.ff_index,
+            None => Some(-1),
+        },
+    }
+}
+
+/// mpv `aid` and `sid` values that select `streams`, for those this file has.
+fn track_choice(tracks: &[Track], streams: Streams) -> (Option<String>, Option<String>) {
+    let find = |kind: &str, index: i64| {
+        tracks
+            .iter()
+            .find(|t| t.kind == kind && t.ff_index == Some(index))
+            .map(|t| t.id.to_string())
+    };
+    let audio = streams.audio.and_then(|i| find("audio", i));
+    let subtitle = match streams.subtitle {
+        Some(-1) => Some("no".into()),
+        Some(i) => find("sub", i),
+        None => None,
+    };
+    (audio, subtitle)
+}
+
+fn select_tracks(mpv: &Mpv, streams: Streams) {
+    let tracks: Vec<Track> = mpv
+        .get_property::<String>("track-list")
+        .ok()
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default();
+    let (audio, subtitle) = track_choice(&tracks, streams);
+    if let Some(id) = audio {
+        let _ = mpv.set_property("aid", id);
+    }
+    if let Some(id) = subtitle {
+        let _ = mpv.set_property("sid", id);
     }
 }
 
@@ -640,6 +711,27 @@ mod tests {
         assert_eq!(tracks.len(), 3);
         assert_eq!(tracks[1].label(), "ENG · AAC");
         assert_eq!(tracks[2].label(), "English SDH · ENG · SUBRIP");
+    }
+
+    #[test]
+    fn maps_tracks_to_jellyfin_streams() {
+        let json = r#"[{"id":1,"type":"audio","ff-index":1,"selected":true},
+            {"id":2,"type":"audio","ff-index":2},
+            {"id":1,"type":"sub","ff-index":3}]"#;
+        let mut tracks: Vec<Track> = serde_json::from_str(json).unwrap();
+        let streams = |audio, subtitle| Streams { audio, subtitle };
+        assert_eq!(selected_streams(&tracks), streams(Some(1), Some(-1)));
+        tracks[2].selected = true;
+        assert_eq!(selected_streams(&tracks), streams(Some(1), Some(3)));
+
+        let choice = |s| track_choice(&tracks, s);
+        assert_eq!(
+            choice(streams(Some(2), Some(3))),
+            (Some("2".into()), Some("1".into()))
+        );
+        assert_eq!(choice(streams(None, Some(-1))), (None, Some("no".into())));
+        // A stream this file doesn't have, such as an external subtitle, keeps mpv's pick.
+        assert_eq!(choice(streams(Some(7), Some(8))), (None, None));
     }
 
     /// Plays a synthetic clip through the embedded core, checks frames arrive,
@@ -709,6 +801,8 @@ mod tests {
             "tracks",
             Box::new(move || p.status().tracks.iter().any(|t| t.kind == "audio")),
         );
+        // Remembered tracks are matched by FFmpeg index; mpv must report it.
+        assert!(player.status().tracks.iter().all(|t| t.ff_index.is_some()));
         // Replacing a playing file must not end the new session.
         player.play(request(2));
         let p = player.clone();

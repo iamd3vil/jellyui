@@ -358,6 +358,18 @@ impl Client {
         )
     }
 
+    /// The audio and subtitle streams Jellyfin picks for this user: the ones last
+    /// played with the item, else the user's language preferences.
+    pub fn default_streams(&self, item_id: &str) -> Result<Streams> {
+        let user = self.user()?.to_string();
+        let info: PlaybackInfo = self.send(
+            "POST",
+            &format!("/Items/{item_id}/PlaybackInfo"),
+            &[("userId", user)],
+        )?;
+        Ok(info.default_streams(item_id))
+    }
+
     // ----- Playback reporting ----------------------------------------------
 
     pub fn report_start(&self, p: &Progress) -> Result<()> {
@@ -628,6 +640,45 @@ impl Item {
     }
 }
 
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct PlaybackInfo {
+    #[serde(default)]
+    media_sources: Vec<MediaSource>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct MediaSource {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    default_audio_stream_index: Option<i64>,
+    #[serde(default)]
+    default_subtitle_stream_index: Option<i64>,
+}
+
+impl PlaybackInfo {
+    /// Defaults of the source `stream_url` plays, which has the item's id.
+    fn default_streams(&self, item_id: &str) -> Streams {
+        let source = self.media_sources.iter().find(|s| s.id == item_id);
+        source
+            .or(self.media_sources.first())
+            .map_or_else(Streams::default, |s| Streams {
+                audio: s.default_audio_stream_index,
+                subtitle: s.default_subtitle_stream_index,
+            })
+    }
+}
+
+/// Audio and subtitle choice as Jellyfin stream indexes (FFmpeg's stream
+/// numbering). A subtitle of -1 means subtitles off.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Streams {
+    pub audio: Option<i64>,
+    pub subtitle: Option<i64>,
+}
+
 /// Playback state reported back to the server.
 #[derive(Clone, Debug)]
 pub struct Progress {
@@ -635,6 +686,8 @@ pub struct Progress {
     pub play_session_id: String,
     pub position_ticks: i64,
     pub paused: bool,
+    /// Jellyfin remembers these per item for the next play; unset clears them.
+    pub streams: Streams,
 }
 
 impl Progress {
@@ -648,7 +701,9 @@ impl Progress {
             "CanSeek": true,
         });
         if with_state {
-            body["IsPaused"] = serde_json::Value::Bool(self.paused);
+            body["IsPaused"] = self.paused.into();
+            body["AudioStreamIndex"] = self.streams.audio.into();
+            body["SubtitleStreamIndex"] = self.streams.subtitle.into();
         }
         body
     }
@@ -727,5 +782,34 @@ mod tests {
         );
         assert_eq!(format_duration(3725), "1:02:05");
         assert_eq!(format_runtime(5400), "1h 30m");
+    }
+
+    #[test]
+    fn playback_info_defaults_and_progress_body() {
+        let json = r#"{"MediaSources":[
+            {"Id":"other","DefaultAudioStreamIndex":9},
+            {"Id":"e1","DefaultAudioStreamIndex":2,"DefaultSubtitleStreamIndex":-1}]}"#;
+        let info: PlaybackInfo = serde_json::from_str(json).unwrap();
+        let streams = info.default_streams("e1");
+        assert_eq!(
+            streams,
+            Streams {
+                audio: Some(2),
+                subtitle: Some(-1)
+            }
+        );
+        assert_eq!(info.default_streams("gone").audio, Some(9));
+
+        let progress = Progress {
+            item_id: "e1".into(),
+            play_session_id: "ps".into(),
+            position_ticks: 0,
+            paused: false,
+            streams,
+        };
+        let body = progress.body(true);
+        assert_eq!(body["AudioStreamIndex"], 2);
+        assert_eq!(body["SubtitleStreamIndex"], -1);
+        assert!(progress.body(false).get("AudioStreamIndex").is_none());
     }
 }
