@@ -31,7 +31,9 @@ done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/jellyui.icns"
 
 for f in LICENSE assets/fonts/OFL.txt target/mpv-static/THIRD-PARTY-LICENSES.txt; do
-    [ -f "$root/$f" ] && cp "$root/$f" "$app/Contents/Resources/"
+    if [ -f "$root/$f" ]; then
+        cp "$root/$f" "$app/Contents/Resources/"
+    fi
 done
 
 cat >"$app/Contents/Info.plist" <<EOF
