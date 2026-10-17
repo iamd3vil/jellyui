@@ -7,11 +7,15 @@ releases:
         repo: "jellyui"
     checksum:
       algorithm: "sha256"
+    # The dmg build packages the binary the rust build makes.
+    builds_sequential: true
     additional_files:
       - "README.md"
       - "CHANGELOG.md"
       - "LICENSE"
       - "assets/fonts/OFL.txt"
+      # Installed by scripts/install.sh as the launcher icon.
+      - "assets/icon/jellyui.svg"
       # Written by scripts/build-mpv.sh: licenses of the statically linked libraries.
       - "target/mpv-static/THIRD-PARTY-LICENSES.txt"
     builds:
@@ -31,3 +35,11 @@ releases:
           targets:
             - "x86_64-unknown-linux-gnu"
             - "aarch64-apple-darwin"
+      # Wraps the macOS binary from the build above in Jellyui.app inside a dmg.
+      - name: "jellyui-dmg"
+        type: "custom"
+        target: "aarch64-apple-darwin"
+        command: "scripts/make-dmg.sh target/aarch64-apple-darwin/release/jellyui {{ meta.tag }} target/jellyui.dmg"
+        artifact: "target/jellyui.dmg"
+        archive_name: "jellyui-{{ meta.tag }}-darwin-arm64.dmg"
+        no_archive: true

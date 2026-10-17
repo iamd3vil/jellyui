@@ -53,6 +53,8 @@ fn main() {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(px(900.), px(600.))),
                     window_background: WindowBackgroundAppearance::Opaque,
+                    // Matches jellyui.desktop, which gives the window its icon on Linux.
+                    app_id: Some("jellyui".into()),
                     ..Default::default()
                 },
                 |window, cx| {

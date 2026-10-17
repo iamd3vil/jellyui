@@ -22,18 +22,42 @@ video inside the window through an embedded [libmpv](https://mpv.io) core.
 
 ## Install
 
-Download the archive for your platform from
-[Releases](https://github.com/iamd3vil/jellyui/releases), extract it and run `jellyui`.
-libmpv and its media libraries are linked into the binary, so nothing else needs to be
-installed.
+Builds are on [Releases](https://github.com/iamd3vil/jellyui/releases). libmpv and its
+media libraries are linked into the binary, so nothing else needs to be installed.
 
-- **Linux x86_64**: glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later).
-  It also loads libasound, libpulse, libxcb and libxkbcommon, which desktop installs
-  already have.
-- **macOS Apple Silicon**: macOS 11 or newer. The binary is not signed, so clear the
-  quarantine flag once: `xattr -d com.apple.quarantine jellyui`.
+### Linux (x86_64)
 
-Verify a download with `sha256sum --check --ignore-missing checksums.txt`.
+`scripts/install.sh` downloads the latest release, checks it against `checksums.txt`,
+and installs `jellyui` with a desktop launcher and icon under `~/.local`. Read it before
+running it:
+
+```sh
+curl -fLO https://raw.githubusercontent.com/iamd3vil/jellyui/main/scripts/install.sh
+less install.sh
+sh install.sh
+```
+
+`--version v0.3.0` picks a release, `--prefix /usr/local` installs system-wide (as
+root), `--archive FILE` installs a tarball you already downloaded, and `--uninstall`
+removes it again. Your settings are kept.
+
+Needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later). It also loads
+libasound, libpulse, libxcb and libxkbcommon, which desktop installs already have.
+
+### macOS (Apple Silicon)
+
+Open `jellyui-<version>-darwin-arm64.dmg` and drag Jellyui to Applications. Needs
+macOS 11 or newer.
+
+The app is not notarized, so macOS blocks the first launch. Open it once, then choose
+**Open Anyway** in System Settings → Privacy & Security. Or clear the quarantine flag:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Jellyui.app
+```
+
+A plain `.tar.gz` with just the binary is published for each platform too. Verify any
+download with `sha256sum --check --ignore-missing checksums.txt`.
 
 ## Building from source
 
@@ -100,7 +124,8 @@ just fmt
 Release archives are built by [rlsr](https://rlsr.sarat.dev) from `rlsr.yml`, linking
 the static libmpv that `scripts/build-mpv.sh` compiles into `target/mpv-static`.
 Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds Linux and macOS on
-their own runners and publishes a GitHub release. Running the workflow by hand builds
+their own runners and publishes a GitHub release: a tarball per platform plus the macOS
+`.dmg`. Running the workflow by hand builds
 snapshot archives without publishing.
 
 To try a release build locally (the first `just mpv-static` takes a while):
@@ -124,6 +149,9 @@ just release-snapshot
 | `src/ui/` | gpuicn components installed as editable source (see below) |
 | `build.rs` | Locates libmpv for linking, or links the static build |
 | `scripts/build-mpv.sh` | Builds libmpv and its dependencies as static libraries for releases |
+| `scripts/install.sh` | Linux installer: binary, desktop launcher, icon |
+| `scripts/make-dmg.sh` | Wraps the macOS binary in `Jellyui.app` and a `.dmg` (run by rlsr on macOS) |
+| `assets/icon/` | App icon: `jellyui.svg` is the source, `jellyui-1024.png` feeds the macOS icon |
 | `rlsr.yml`, `.github/workflows/release.yml` | Release packaging and CI |
 
 ### How playback works
