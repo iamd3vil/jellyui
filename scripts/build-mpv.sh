@@ -135,8 +135,15 @@ meson_build libplacebo -Dvulkan=disabled -Dopengl=disabled -Dd3d11=disabled -Dgl
 step mpv
 fetch mpv https://github.com/mpv-player/mpv v0.41.0
 mpv_platform=(-Dalsa=enabled -Dpulse=enabled)
-# coreaudio needs osdep/utils-mac.c, which mpv only builds with cocoa.
-[ "$os" = Darwin ] && mpv_platform=(-Dcoreaudio=enabled -Dcocoa=enabled -Dswift-build=disabled)
+if [ "$os" = Darwin ]; then
+    mpv_platform=(-Dcoreaudio=enabled -Dswift-build=disabled)
+    # ao_coreaudio needs osdep/utils-mac.c, which mpv only builds with cocoa, and
+    # cocoa needs the Swift app layer. Build the file with the CoreAudio sources.
+    perl -0pi -e "s|'audio/out/ao_coreaudio_utils.c'\)|'audio/out/ao_coreaudio_utils.c',\n                     'osdep/utils-mac.c')|" \
+        "$src/mpv/meson.build"
+    [ "$(grep -c "'osdep/utils-mac.c'" "$src/mpv/meson.build")" -ge 2 ] ||
+        { echo "mpv meson.build patch for utils-mac.c did not apply" >&2; exit 1; }
+fi
 meson_build mpv -Dauto_features=disabled -Dlibmpv=true -Dcplayer=false -Dtests=false -Dgl=disabled \
     -Dbuild-date=false -Dzlib=enabled -Diconv=enabled "${mpv_platform[@]}"
 
