@@ -135,7 +135,8 @@ meson_build libplacebo -Dvulkan=disabled -Dopengl=disabled -Dd3d11=disabled -Dgl
 step mpv
 fetch mpv https://github.com/mpv-player/mpv v0.41.0
 mpv_platform=(-Dalsa=enabled -Dpulse=enabled)
-[ "$os" = Darwin ] && mpv_platform=(-Dcoreaudio=enabled -Dswift-build=disabled)
+# coreaudio needs osdep/utils-mac.c, which mpv only builds with cocoa.
+[ "$os" = Darwin ] && mpv_platform=(-Dcoreaudio=enabled -Dcocoa=enabled -Dswift-build=disabled)
 meson_build mpv -Dauto_features=disabled -Dlibmpv=true -Dcplayer=false -Dtests=false -Dgl=disabled \
     -Dbuild-date=false -Dzlib=enabled -Diconv=enabled "${mpv_platform[@]}"
 
