@@ -43,7 +43,9 @@ meson_build() { # name [meson options...]
     [ -d "$src/$name/build" ] && reconf=(--reconfigure)
     quiet meson setup ${reconf[@]+"${reconf[@]}"} "$src/$name/build" "$src/$name" --prefix "$prefix" --libdir lib \
         --buildtype release --default-library static -Db_staticpic=true "$@"
-    quiet ninja -C "$src/$name/build" install
+    quiet ninja -C "$src/$name/build"
+    # Only libraries, headers and .pc files; fontconfig would also write into /etc.
+    quiet meson install -C "$src/$name/build" --no-rebuild --tags devel
 }
 
 cmake_build() { # name [cmake options...]
