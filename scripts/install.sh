@@ -1,10 +1,11 @@
 #!/bin/sh
-# Installs jellyui from a GitHub release on Linux x86_64, with a desktop
-# launcher and icon. Run with --help for options.
+# Installs jellyui from a GitHub release: on Linux x86_64 with a desktop
+# launcher and icon, on Apple Silicon Macs as Jellyui.app. Run with --help
+# for options.
 set -eu
 
 repo=iamd3vil/jellyui
-prefix=$HOME/.local
+prefix=
 version=latest
 archive=
 uninstall=0
@@ -13,12 +14,16 @@ usage() {
     cat <<EOF
 Usage: install.sh [options]
 
-Installs jellyui and its desktop launcher under ~/.local.
+Linux: installs jellyui and its desktop launcher under ~/.local.
+macOS: installs Jellyui.app into /Applications, or ~/Applications when
+       /Applications isn't writable.
 
-  --prefix DIR     install under DIR instead, e.g. /usr/local (run as root)
-  --version TAG    release to install, e.g. v0.2.0 (default: latest)
-  --archive FILE   install from a downloaded jellyui-*-linux-amd64.tar.gz
-  --uninstall      remove what this script installed under the prefix
+  --prefix DIR     Linux: install under DIR instead, e.g. /usr/local (as root)
+                   macOS: put Jellyui.app in DIR instead
+  --version TAG    release to install, e.g. v0.3.0 (default: latest)
+  --archive FILE   install from a downloaded release file instead
+                   (jellyui-*-linux-amd64.tar.gz or jellyui-*-darwin-arm64.dmg)
+  --uninstall      remove what this script installed
   -h, --help       show this help
 EOF
 }
@@ -51,6 +56,28 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+os=$(uname -s)
+case $os in
+Linux)
+    asset=linux-amd64.tar.gz
+    settings=${XDG_CONFIG_HOME:-$HOME/.config}/jellyui
+    : "${prefix:=$HOME/.local}"
+    ;;
+Darwin)
+    asset=darwin-arm64.dmg
+    settings="$HOME/Library/Application Support/jellyui"
+    if [ -z "$prefix" ]; then
+        if [ -w /Applications ]; then
+            prefix=/Applications
+        else
+            prefix=$HOME/Applications
+        fi
+    fi
+    ;;
+*) die "no builds are published for $os; build from source" ;;
+esac
+
+# Linux layout.
 bin=$prefix/bin/jellyui
 apps=$prefix/share/applications
 desktop=$apps/jellyui.desktop
@@ -58,6 +85,8 @@ icons=$prefix/share/icons/hicolor
 icon=$icons/scalable/apps/jellyui.svg
 docs=$prefix/share/doc/jellyui
 doc_files="README.md CHANGELOG.md LICENSE OFL.txt THIRD-PARTY-LICENSES.txt"
+# macOS layout.
+app=$prefix/Jellyui.app
 
 # Only refresh an icon cache that already exists: creating one in a user's
 # hicolor directory hides icons other apps add there later.
@@ -68,27 +97,49 @@ refresh_caches() {
 }
 
 if [ "$uninstall" = 1 ]; then
-    rm -f "$bin" "$desktop" "$icon"
-    for f in $doc_files; do
-        rm -f "$docs/$f"
-    done
-    rmdir "$docs" 2>/dev/null || true
-    refresh_caches
-    echo "Removed jellyui from $prefix. Settings in ${XDG_CONFIG_HOME:-$HOME/.config}/jellyui are kept."
+    if [ "$os" = Darwin ]; then
+        rm -rf "$app"
+    else
+        rm -f "$bin" "$desktop" "$icon"
+        for f in $doc_files; do
+            rm -f "$docs/$f"
+        done
+        rmdir "$docs" 2>/dev/null || true
+        refresh_caches
+    fi
+    echo "Removed jellyui from $prefix. Settings in $settings are kept."
     exit 0
 fi
 
-[ "$(uname -s)" = Linux ] ||
-    die "this installs the Linux build; on macOS use the .dmg from https://github.com/$repo/releases"
-[ "$(uname -m)" = x86_64 ] ||
-    die "only x86_64 builds are published; build from source on $(uname -m)"
+if [ "$os" = Darwin ]; then
+    # uname -m says x86_64 in a shell running under Rosetta, so ask the hardware.
+    [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ] ||
+        die "only Apple Silicon builds are published; build from source on Intel Macs"
+else
+    [ "$(uname -m)" = x86_64 ] ||
+        die "only x86_64 builds are published; build from source on $(uname -m)"
+fi
 
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+mnt=
+cleanup() {
+    if [ -n "$mnt" ]; then
+        hdiutil detach -quiet "$mnt" 2>/dev/null || true
+    fi
+    rm -rf "$tmp"
+}
+trap cleanup EXIT
+
+sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1"
+    else
+        shasum -a 256 "$1"
+    fi | cut -d' ' -f1
+}
 
 if [ -z "$archive" ]; then
     command -v curl >/dev/null 2>&1 || die "curl is required"
-    command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
     if [ "$version" = latest ]; then
         # The latest-release page redirects to .../releases/tag/<tag>.
         url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
@@ -100,16 +151,33 @@ if [ -z "$archive" ]; then
     v*) ;;
     *) version=v$version ;;
     esac
-    name=jellyui-$version-linux-amd64.tar.gz
+    name=jellyui-$version-$asset
     base=https://github.com/$repo/releases/download/$version
     echo "Downloading jellyui $version"
     curl -fL# --proto '=https' --tlsv1.2 -o "$tmp/$name" "$base/$name" ||
         die "could not download $base/$name"
     curl -fsSL --proto '=https' --tlsv1.2 -o "$tmp/checksums.txt" "$base/checksums.txt" ||
         die "could not download $base/checksums.txt"
-    (cd "$tmp" && grep "  $name\$" checksums.txt | sha256sum -c --quiet -) ||
+    expected=$(awk -v name="$name" '$2 == name { print $1 }' "$tmp/checksums.txt")
+    [ -n "$expected" ] && [ "$(sha256 "$tmp/$name")" = "$expected" ] ||
         die "checksum mismatch for $name"
     archive=$tmp/$name
+fi
+
+if [ "$os" = Darwin ]; then
+    mkdir "$tmp/mnt"
+    hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$tmp/mnt" "$archive" >/dev/null ||
+        die "could not open $archive"
+    mnt=$tmp/mnt
+    [ -d "$mnt/Jellyui.app" ] || die "$archive has no Jellyui.app"
+    mkdir -p "$prefix"
+    rm -rf "$app"
+    ditto "$mnt/Jellyui.app" "$app"
+    # curl doesn't quarantine what it downloads, but a browser download passed
+    # with --archive is, and Gatekeeper blocks the unnotarized app until cleared.
+    xattr -dr com.apple.quarantine "$app" 2>/dev/null || true
+    echo "Installed Jellyui to $app"
+    exit 0
 fi
 
 mkdir "$tmp/release"

@@ -79,6 +79,23 @@ jobs:
           test -L /tmp/jellyui-dmg/Applications
           hdiutil detach /tmp/jellyui-dmg
 
+      # Installs this build, then the latest published release, and uninstalls each.
+      - name: Test install script
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then file=$(ls dist/*.dmg); else file=$(ls dist/*.tar.gz); fi
+          for source in "--archive $file" ""; do
+            prefix="$RUNNER_TEMP/install-test"
+            scripts/install.sh $source --prefix "$prefix"
+            find "$prefix" -type f | sed "s|$prefix/||" | grep -v '^Jellyui.app/Contents/' || true
+            if [ "$RUNNER_OS" = macOS ]; then
+              codesign --verify --strict "$prefix/Jellyui.app"
+            else
+              test -x "$prefix/bin/jellyui"
+            fi
+            scripts/install.sh --uninstall --prefix "$prefix"
+            test -z "$(find "$prefix" -type f)"
+          done
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-${{ matrix.target }}

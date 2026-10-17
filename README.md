@@ -25,11 +25,8 @@ video inside the window through an embedded [libmpv](https://mpv.io) core.
 Builds are on [Releases](https://github.com/iamd3vil/jellyui/releases). libmpv and its
 media libraries are linked into the binary, so nothing else needs to be installed.
 
-### Linux (x86_64)
-
-`scripts/install.sh` downloads the latest release, checks it against `checksums.txt`,
-and installs `jellyui` with a desktop launcher and icon under `~/.local`. Read it before
-running it:
+`scripts/install.sh` downloads the latest release for your platform, checks it against
+`checksums.txt` and installs it. Read it before running it:
 
 ```sh
 curl -fLO https://raw.githubusercontent.com/iamd3vil/jellyui/main/scripts/install.sh
@@ -37,24 +34,29 @@ less install.sh
 sh install.sh
 ```
 
-`--version v0.3.0` picks a release, `--prefix /usr/local` installs system-wide (as
-root), `--archive FILE` installs a tarball you already downloaded, and `--uninstall`
-removes it again. Your settings are kept.
+- **Linux (x86_64)**: installs `jellyui` with a desktop launcher and icon under
+  `~/.local`. Needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later).
+  It also loads libasound, libpulse, libxcb and libxkbcommon, which desktop installs
+  already have.
+- **macOS (Apple Silicon)**: installs `Jellyui.app` into `/Applications`, or
+  `~/Applications` if `/Applications` isn't writable. Needs macOS 11 or newer.
 
-Needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later). It also loads
-libasound, libpulse, libxcb and libxkbcommon, which desktop installs already have.
+`--version v0.3.0` picks a release, `--prefix DIR` installs somewhere else (on Linux,
+`/usr/local` as root installs system-wide), `--archive FILE` installs a release file you
+already downloaded, and `--uninstall` removes it again. Your settings are kept.
 
-### macOS (Apple Silicon)
+### macOS without the script
 
-Open `jellyui-<version>-darwin-arm64.dmg` and drag Jellyui to Applications. Needs
-macOS 11 or newer.
-
-The app is not notarized, so macOS blocks the first launch. Open it once, then choose
-**Open Anyway** in System Settings → Privacy & Security. Or clear the quarantine flag:
+Open `jellyui-<version>-darwin-arm64.dmg` and drag Jellyui to Applications. The app is
+not notarized, so macOS blocks the first launch of an app downloaded in a browser. Open
+it once, then choose **Open Anyway** in System Settings → Privacy & Security. Or clear
+the quarantine flag:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Jellyui.app
 ```
+
+The install script doesn't hit this: `curl` doesn't mark its downloads as quarantined.
 
 A plain `.tar.gz` with just the binary is published for each platform too. Verify any
 download with `sha256sum --check --ignore-missing checksums.txt`.
@@ -149,7 +151,7 @@ just release-snapshot
 | `src/ui/` | gpuicn components installed as editable source (see below) |
 | `build.rs` | Locates libmpv for linking, or links the static build |
 | `scripts/build-mpv.sh` | Builds libmpv and its dependencies as static libraries for releases |
-| `scripts/install.sh` | Linux installer: binary, desktop launcher, icon |
+| `scripts/install.sh` | Installer: Linux binary with desktop launcher and icon, or `Jellyui.app` on macOS |
 | `scripts/make-dmg.sh` | Wraps the macOS binary in `Jellyui.app` and a `.dmg` (run by rlsr on macOS) |
 | `assets/icon/` | App icon: `jellyui.svg` is the source, `jellyui-1024.png` feeds the macOS icon |
 | `rlsr.yml`, `.github/workflows/release.yml` | Release packaging and CI |
