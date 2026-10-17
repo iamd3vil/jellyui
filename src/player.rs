@@ -99,6 +99,8 @@ pub struct PlayerStatus {
     /// Bumped whenever `tracks` changes so menus can be rebuilt lazily.
     pub tracks_version: u64,
     pub error: Option<String>,
+    /// The file played to its end, rather than being stopped or failing.
+    pub finished: bool,
 }
 
 pub struct PlayRequest {
@@ -313,12 +315,15 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) -> Result<()> {
 
     let mut renderer = renderer;
     let mut session: Option<Session> = None;
+    // END_FILE events still due from files that a later load replaced.
+    let mut replaced_ends = 0u32;
     let mut awake = KeepAwake::default();
 
     loop {
         // Events from mpv.
         while let Some(event) = mpv.wait_event(0.0) {
             match event {
+                Ok(Event::EndFile(_)) if replaced_ends > 0 => replaced_ends -= 1,
                 Ok(event) => {
                     if handle_event(&event, &shared, &mut session) {
                         finish(&shared, &mut session);
@@ -345,13 +350,19 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) -> Result<()> {
         while let Ok(cmd) = rx.try_recv() {
             match cmd {
                 Cmd::Load(req) => {
-                    if session.is_some() {
-                        let _ = mpv.command("stop", &[]);
-                        finish(&shared, &mut session);
+                    // `loadfile replace` ends the old file. Report it at its own position;
+                    // the shared status already belongs to the new request.
+                    if let Some(old) = session.take() {
+                        let position = mpv.get_property::<f64>("time-pos").unwrap_or(0.);
+                        let paused = mpv.get_property::<bool>("pause").unwrap_or(false);
+                        report_stopped(&old, position, paused);
+                        replaced_ends += 1;
                     }
                     let header = req.client.mpv_auth_header();
                     mpv.set_property("http-header-fields", header)?;
                     mpv.set_property("force-media-title", req.title.clone())?;
+                    // mpv keeps `pause` across files.
+                    mpv.set_property("pause", false)?;
                     let start = if req.start_secs > 0 {
                         format!("start=+{}", req.start_secs)
                     } else {
@@ -413,7 +424,7 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) -> Result<()> {
             active.last_report = Instant::now();
             let snapshot = shared.status.lock().unwrap().clone();
             if snapshot.state == PlayState::Playing {
-                let progress = progress_of(active, &snapshot);
+                let progress = progress_of(active, snapshot.position, snapshot.paused);
                 if let Err(err) = active.client.report_progress(&progress) {
                     log::warn!("report progress failed: {err:#}");
                 }
@@ -570,6 +581,7 @@ fn handle_event(event: &Event, shared: &Shared, session: &mut Option<Session>) -
             if *reason == mpv_end_file_reason::Error {
                 status.error = Some("mpv could not play this stream".to_string());
             }
+            status.finished = *reason == mpv_end_file_reason::Eof;
             // Only the active session's end is meaningful (stop+load emits one too).
             session.is_some()
         }
@@ -589,12 +601,21 @@ fn mpv_error_text(code: i32) -> String {
     }
 }
 
-fn progress_of(session: &Session, status: &PlayerStatus) -> Progress {
+fn progress_of(session: &Session, position: f64, paused: bool) -> Progress {
     Progress {
         item_id: session.item_id.clone(),
         play_session_id: session.play_session_id.clone(),
-        position_ticks: (status.position * TICKS_PER_SECOND as f64) as i64,
-        paused: status.paused,
+        position_ticks: (position * TICKS_PER_SECOND as f64) as i64,
+        paused,
+    }
+}
+
+fn report_stopped(session: &Session, position: f64, paused: bool) {
+    if let Err(err) = session
+        .client
+        .report_stopped(&progress_of(session, position, paused))
+    {
+        log::warn!("report stopped failed: {err:#}");
     }
 }
 
@@ -602,14 +623,8 @@ fn progress_of(session: &Session, status: &PlayerStatus) -> Progress {
 fn finish(shared: &Shared, session: &mut Option<Session>) {
     let Some(active) = session.take() else { return };
     let snapshot = shared.status.lock().unwrap().clone();
-    if let Err(err) = active
-        .client
-        .report_stopped(&progress_of(&active, &snapshot))
-    {
-        log::warn!("report stopped failed: {err:#}");
-    }
-    let mut status = shared.status.lock().unwrap();
-    status.state = PlayState::Ended;
+    report_stopped(&active, snapshot.position, snapshot.paused);
+    shared.status.lock().unwrap().state = PlayState::Ended;
 }
 
 #[cfg(test)]
@@ -661,13 +676,14 @@ mod tests {
         let client = Client::new("http://127.0.0.1:9", "test-device").with_session("token", "user");
         let player = Player::default();
         player.set_target_size(640, 480);
-        player.play(PlayRequest {
-            client,
+        let request = |start_secs| PlayRequest {
+            client: client.clone(),
             item_id: "test".into(),
             url: media.display().to_string(),
             title: "Embedded test".into(),
-            start_secs: 0,
-        });
+            start_secs,
+        };
+        player.play(request(0));
         let wait = |what: &str, mut ok: Box<dyn FnMut() -> bool>| {
             let deadline = Instant::now() + Duration::from_secs(20);
             while !ok() {
@@ -693,6 +709,15 @@ mod tests {
             "tracks",
             Box::new(move || p.status().tracks.iter().any(|t| t.kind == "audio")),
         );
+        // Replacing a playing file must not end the new session.
+        player.play(request(2));
+        let p = player.clone();
+        wait(
+            "replaced",
+            Box::new(move || p.status().state == PlayState::Playing),
+        );
+        thread::sleep(Duration::from_millis(500));
+        assert_eq!(player.status().state, PlayState::Playing);
         player.toggle_pause();
         let p = player.clone();
         wait("paused", Box::new(move || p.status().paused));
@@ -705,7 +730,16 @@ mod tests {
             "ended",
             Box::new(move || p.status().state == PlayState::Ended),
         );
+        assert!(!player.status().finished);
         player.acknowledge_end();
         assert_eq!(player.status().state, PlayState::Idle);
+
+        player.play(request(28));
+        let p = player.clone();
+        wait(
+            "played to the end",
+            Box::new(move || p.status().state == PlayState::Ended),
+        );
+        assert!(player.status().finished);
     }
 }

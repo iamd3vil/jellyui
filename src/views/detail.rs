@@ -132,7 +132,7 @@ impl Jellyui {
                             }),
                     )
                     .child(meta_line(item, cx))
-                    .child(self.render_actions(item, cx)),
+                    .child(self.render_actions(item, data.next.as_deref(), cx)),
             );
 
         let overview = item.overview.clone().filter(|o| !o.is_empty()).map(|text| {
@@ -164,7 +164,7 @@ impl Jellyui {
         )
     }
 
-    fn render_actions(&self, item: &Item, cx: &mut Context<Self>) -> Div {
+    fn render_actions(&self, item: &Item, next: Option<&Item>, cx: &mut Context<Self>) -> Div {
         let t = UiTheme::read(cx).clone();
         let mut row = div().flex().items_center().gap(px(10.)).mt(px(4.));
         if item.is_playable() {
@@ -217,6 +217,24 @@ impl Jellyui {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.play_series(&target, window, cx)
                     })),
+            );
+        }
+
+        if let Some(next) = next {
+            let target = next.clone();
+            row = row.child(
+                Button::new("detail.next-episode")
+                    .variant(ButtonVariant::Secondary)
+                    .size(ButtonSize::Lg)
+                    .child(icon(
+                        LucideIcon::SkipForward,
+                        16.,
+                        t.colors.secondary_foreground,
+                    ))
+                    .label("Next episode")
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.open_item(target.clone(), cx)),
+                    ),
             );
         }
 

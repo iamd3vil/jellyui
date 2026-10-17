@@ -270,6 +270,21 @@ impl Client {
         Ok(result.items)
     }
 
+    /// The episode after `episode_id` in the series' order, across seasons.
+    pub fn next_episode(&self, series_id: &str, episode_id: &str) -> Result<Option<Item>> {
+        let user = self.user()?.to_string();
+        let result: ItemsResult = self.get(
+            &format!("/Shows/{series_id}/Episodes"),
+            &[
+                ("userId", user),
+                ("startItemId", episode_id.to_string()),
+                ("limit", "2".to_string()),
+                ("fields", ITEM_FIELDS.to_string()),
+            ],
+        )?;
+        Ok(result.items.into_iter().find(|ep| ep.id != episode_id))
+    }
+
     /// The next unwatched episode of a series, if any.
     pub fn series_next_up(&self, series_id: &str) -> Result<Option<Item>> {
         let user = self.user()?.to_string();

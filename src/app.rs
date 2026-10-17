@@ -112,6 +112,8 @@ pub struct DetailData {
     pub seasons: Vec<Item>,
     pub season_id: Option<String>,
     pub episodes: Vec<Item>,
+    /// The episode after this one, on episode pages.
+    pub next: Option<Box<Item>>,
 }
 
 #[derive(Default)]
@@ -146,6 +148,10 @@ pub struct Jellyui {
     /// Whether the embedded video view covers the content area.
     pub player_open: bool,
     pub current_frame: Option<Arc<RenderImage>>,
+    /// Item handed to the player last.
+    playing_id: Option<String>,
+    /// The episode after the playing one: offered near the end and once it finishes.
+    pub up_next: Option<Item>,
     frame_seq: u64,
     pub seek_slider: Entity<SliderState>,
     pub scrubbing: bool,
@@ -210,6 +216,8 @@ impl Jellyui {
             sidebar_collapsed: false,
             player_open: false,
             current_frame: None,
+            playing_id: None,
+            up_next: None,
             frame_seq: 0,
             seek_slider,
             scrubbing: false,
@@ -469,6 +477,7 @@ impl Jellyui {
                         seasons: Vec::new(),
                         season_id: Some(season_id),
                         episodes: Vec::new(),
+                        next: None,
                     }),
                     cx,
                 );
@@ -483,6 +492,7 @@ impl Jellyui {
                     seasons: Vec::new(),
                     season_id: None,
                     episodes: Vec::new(),
+                    next: None,
                 }),
                 cx,
             ),
@@ -669,7 +679,8 @@ impl Jellyui {
                     move |client| {
                         let item = client.item(&item_id)?;
                         if !is_series {
-                            return Ok((item, Vec::new(), None, Vec::new()));
+                            let next = next_episode_of(&client, &item);
+                            return Ok((item, Vec::new(), None, Vec::new(), next));
                         }
                         let seasons = client.seasons(&item_id)?;
                         let season = wanted_season
@@ -687,7 +698,7 @@ impl Jellyui {
                             Some(season_id) => client.episodes(&item_id, season_id)?,
                             None => Vec::new(),
                         };
-                        Ok((item, seasons, season, episodes))
+                        Ok((item, seasons, season, episodes, None))
                     },
                     move |this, result, cx| {
                         if this.generation != generation {
@@ -696,11 +707,12 @@ impl Jellyui {
                         if let Page::Detail(data) = &mut this.page {
                             data.loading = false;
                             match result {
-                                Ok((item, seasons, season_id, episodes)) => {
+                                Ok((item, seasons, season_id, episodes, next)) => {
                                     data.item = item;
                                     data.seasons = seasons;
                                     data.season_id = season_id;
                                     data.episodes = episodes;
+                                    data.next = next.map(Box::new);
                                 }
                                 Err(err) => {
                                     this.toast("Could not load details", format!("{err:#}"), cx)
@@ -869,12 +881,34 @@ impl Jellyui {
         });
         self.player_status = self.player.status();
         self.player_open = true;
+        self.playing_id = Some(item.id.clone());
+        self.up_next = None;
+        let (client, item) = (session.client.clone(), item.clone());
+        self.fetch_with(
+            client,
+            cx,
+            move |client| Ok(next_episode_of(&client, &item).map(|next| (item.id, next))),
+            |this, result, cx| {
+                if let Ok(Some((id, next))) = result
+                    && this.playing_id.as_ref() == Some(&id)
+                {
+                    this.up_next = Some(next);
+                    cx.notify();
+                }
+            },
+        );
         window.focus(&self.player_focus, cx);
         self.show_controls();
         self.tracks_version = 0;
         self.rebuild_track_menus(cx);
         self.start_player_poll(cx);
         cx.notify();
+    }
+
+    pub fn play_up_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(next) = self.up_next.clone() {
+            self.play(&next, next.resume_secs() > 0, window, cx);
+        }
     }
 
     /// Called on pointer activity over the video; controls hide again after a delay.
@@ -1009,7 +1043,10 @@ impl Jellyui {
                             });
                         }
                         if ended {
-                            this.player_open = false;
+                            // A finished episode leaves the view open on its successor.
+                            this.player_open &= this.player_status.finished
+                                && this.player_status.error.is_none()
+                                && this.up_next.is_some();
                             if let Some(err) = this.player_status.error.clone() {
                                 this.toast("Playback stopped", err, cx);
                             }
@@ -1033,6 +1070,19 @@ impl Jellyui {
             }
         }));
     }
+}
+
+/// The episode after `item` when it is one. A failed lookup only loses the shortcut.
+fn next_episode_of(client: &Client, item: &Item) -> Option<Item> {
+    let series_id = item
+        .series_id
+        .as_deref()
+        .filter(|_| item.kind == "Episode")?;
+    client
+        .next_episode(series_id, &item.id)
+        .inspect_err(|err| log::warn!("next episode lookup failed: {err:#}"))
+        .ok()
+        .flatten()
 }
 
 pub fn library_query(view: &Item, sort: &str, start: usize) -> ItemQuery {
