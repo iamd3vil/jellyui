@@ -163,6 +163,7 @@ pub struct Jellyui {
     pub scrubbing: bool,
     pub audio_menu: Entity<MenuState>,
     pub subtitle_menu: Entity<MenuState>,
+    pub speed_menu: Entity<MenuState>,
     tracks_version: u64,
     pub player_focus: FocusHandle,
     /// Whether the player overlay controls are shown; hidden after pointer idle.
@@ -189,6 +190,7 @@ impl Jellyui {
         });
         let audio_menu = cx.new(|cx| MenuState::new([], cx));
         let subtitle_menu = cx.new(|cx| MenuState::new([], cx));
+        let speed_menu = cx.new(|cx| MenuState::new([], cx));
 
         let mut subscriptions = Vec::new();
         subscriptions.push(
@@ -259,6 +261,7 @@ impl Jellyui {
             scrubbing: false,
             audio_menu,
             subtitle_menu,
+            speed_menu,
             tracks_version: 0,
             player_focus: cx.focus_handle(),
             controls_visible: true,
@@ -277,6 +280,7 @@ impl Jellyui {
             .map(|(s, _)| s.clone())
             .or_else(|| this.config.servers.first().map(|s| s.id.clone()));
         this.rebuild_menu(cx);
+        this.rebuild_speed_menu(cx);
         this
     }
 
@@ -1089,6 +1093,7 @@ impl Jellyui {
             || self.adjusting_volume
             || self.audio_menu.read(cx).is_open()
             || self.subtitle_menu.read(cx).is_open()
+            || self.speed_menu.read(cx).is_open()
     }
 
     pub fn close_player_view(&mut self, cx: &mut Context<Self>) {
@@ -1116,6 +1121,31 @@ impl Jellyui {
         if let Some(old) = std::mem::replace(&mut self.current_frame, frame) {
             let _ = window.drop_image(old);
         }
+    }
+
+    pub fn rebuild_speed_menu(&mut self, cx: &mut Context<Self>) {
+        let items = [0.5, 0.75, 1., 1.25, 1.5, 1.75, 2.]
+            .into_iter()
+            .map(|speed| {
+                let handle = cx.weak_entity();
+                MenuItem::new(
+                    gpui_kit::SharedString::from(format!("speed.{speed}")),
+                    if speed == 1. {
+                        "Normal (1×)".into()
+                    } else {
+                        format!("{speed}×")
+                    },
+                )
+                .radio((self.player_status.speed - speed).abs() < 0.01)
+                .on_click(move |_, _, cx| {
+                    handle
+                        .update(cx, |this, _| this.player.set_speed(speed))
+                        .ok();
+                })
+            })
+            .collect::<Vec<_>>();
+        self.speed_menu
+            .update(cx, |menu, cx| menu.set_items(items, cx));
     }
 
     /// Rebuilds the audio and subtitle menus from the current track list.
@@ -1191,11 +1221,16 @@ impl Jellyui {
                             || status.position != this.player_status.position
                             || status.volume != this.player_status.volume
                             || status.muted != this.player_status.muted
+                            || status.speed != this.player_status.speed
                             || status.paused != this.player_status.paused
                             || status.buffering != this.player_status.buffering
                             || status.state != this.player_status.state
                             || status.tracks_version != this.player_status.tracks_version;
+                        let speed_changed = status.speed != this.player_status.speed;
                         this.player_status = status;
+                        if speed_changed {
+                            this.rebuild_speed_menu(cx);
+                        }
                         if this.player_status.tracks_version != this.tracks_version {
                             this.tracks_version = this.player_status.tracks_version;
                             this.rebuild_track_menus(cx);

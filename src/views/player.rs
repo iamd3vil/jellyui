@@ -241,6 +241,10 @@ impl Jellyui {
                             .w(px(80.))
                             .child(Slider::new(&self.volume_slider).aria_label("Volume")),
                     )
+                    .child(
+                        Menu::new(&self.speed_menu, "Playback speed")
+                            .trigger(div().text_color(white).child(format!("{}×", s.speed))),
+                    )
                     .child(audio_menu)
                     .child(subtitle_menu)
                     .child(

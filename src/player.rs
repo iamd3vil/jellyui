@@ -100,6 +100,7 @@ pub struct PlayerStatus {
     pub buffering: bool,
     pub volume: f64,
     pub muted: bool,
+    pub speed: f64,
     pub tracks: Vec<Track>,
     /// Bumped whenever `tracks` changes so menus can be rebuilt lazily.
     pub tracks_version: u64,
@@ -119,6 +120,7 @@ impl Default for PlayerStatus {
             buffering: false,
             volume: 100.,
             muted: false,
+            speed: 1.,
             tracks: Vec::new(),
             tracks_version: 0,
             error: None,
@@ -144,6 +146,7 @@ enum Cmd {
     SetSubtitle(Option<i64>),
     SetVolume(f64),
     ToggleMute,
+    SetSpeed(f64),
     Stop,
 }
 
@@ -208,6 +211,7 @@ impl Player {
             *status = PlayerStatus {
                 volume: status.volume,
                 muted: status.muted,
+                speed: status.speed,
                 ..Default::default()
             };
         }
@@ -238,6 +242,11 @@ impl Player {
     pub fn toggle_mute(&self) {
         self.send(Cmd::ToggleMute);
     }
+    pub fn set_speed(&self, speed: f64) {
+        if speed.is_finite() {
+            self.send(Cmd::SetSpeed(speed.clamp(0.5, 2.)));
+        }
+    }
     pub fn stop(&self) {
         self.send(Cmd::Stop);
     }
@@ -252,6 +261,7 @@ impl Player {
                 position: request.start_secs as f64,
                 volume: status.volume,
                 muted: status.muted,
+                speed: status.speed,
                 ..Default::default()
             };
         }
@@ -358,6 +368,7 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) -> Result<()> {
     mpv.observe_property("paused-for-cache", Format::Flag, 5)?;
     mpv.observe_property("volume", Format::Double, 6)?;
     mpv.observe_property("mute", Format::Flag, 7)?;
+    mpv.observe_property("speed", Format::Double, 8)?;
 
     let mut renderer = renderer;
     let mut session: Option<Session> = None;
@@ -477,6 +488,9 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) -> Result<()> {
                 }
                 Cmd::ToggleMute => {
                     let _ = mpv.command("cycle", &["mute"]);
+                }
+                Cmd::SetSpeed(speed) => {
+                    let _ = mpv.set_property("speed", speed);
                 }
                 Cmd::Stop => {
                     let _ = mpv.command("stop", &[]);
@@ -633,6 +647,7 @@ fn handle_event(event: &Event, shared: &Shared, session: &mut Option<Session>) -
                 ("pause", PropertyData::Flag(v)) => status.paused = *v,
                 ("volume", PropertyData::Double(v)) => status.volume = *v,
                 ("mute", PropertyData::Flag(v)) => status.muted = *v,
+                ("speed", PropertyData::Double(v)) => status.speed = *v,
                 ("paused-for-cache", PropertyData::Flag(v)) => status.buffering = *v,
                 ("track-list", PropertyData::Str(json)) => {
                     let tracks: Vec<Track> = serde_json::from_str(json).unwrap_or_default();
@@ -877,6 +892,12 @@ mod tests {
             "volume restored",
             Box::new(move || (p.status().volume - 35.).abs() < 0.1),
         );
+        player.set_speed(1.5);
+        let p = player.clone();
+        wait(
+            "speed",
+            Box::new(move || (p.status().speed - 1.5).abs() < 0.01),
+        );
         // Replacing a playing file must not end the new session.
         player.play(request(2));
         let p = player.clone();
@@ -886,6 +907,13 @@ mod tests {
         );
         thread::sleep(Duration::from_millis(500));
         assert!((player.status().volume - 35.).abs() < 0.1);
+        assert!((player.status().speed - 1.5).abs() < 0.01);
+        player.set_speed(1.);
+        let p = player.clone();
+        wait(
+            "normal speed",
+            Box::new(move || (p.status().speed - 1.).abs() < 0.01),
+        );
         assert_eq!(player.status().state, PlayState::Playing);
         player.toggle_pause();
         let p = player.clone();
