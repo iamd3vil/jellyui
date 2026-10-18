@@ -154,6 +154,8 @@ pub struct Jellyui {
     pub up_next: Option<Item>,
     frame_seq: u64,
     pub seek_slider: Entity<SliderState>,
+    pub volume_slider: Entity<SliderState>,
+    pub adjusting_volume: bool,
     pub scrubbing: bool,
     pub audio_menu: Entity<MenuState>,
     pub subtitle_menu: Entity<MenuState>,
@@ -174,6 +176,13 @@ impl Jellyui {
             cx.new(|cx| InputState::new(window, cx).placeholder("Search movies, shows, episodes…"));
         let connect = ConnectState::new(window, cx);
         let seek_slider = cx.new(|_| SliderState::new().min(0.).max(1.).step(0.1));
+        let volume_slider = cx.new(|_| {
+            SliderState::new()
+                .min(0.)
+                .max(100.)
+                .step(1.)
+                .default_value(100.)
+        });
         let audio_menu = cx.new(|cx| MenuState::new([], cx));
         let subtitle_menu = cx.new(|cx| MenuState::new([], cx));
 
@@ -199,6 +208,24 @@ impl Jellyui {
             },
         ));
 
+        subscriptions.push(
+            cx.subscribe(&volume_slider, |this, _, event: &SliderEvent, cx| {
+                let value = match event {
+                    SliderEvent::Change(value) => {
+                        this.adjusting_volume = true;
+                        value
+                    }
+                    SliderEvent::Release(value) => {
+                        this.adjusting_volume = false;
+                        value
+                    }
+                };
+                this.player.set_volume(value.end() as f64);
+                this.show_controls();
+                cx.notify();
+            }),
+        );
+
         let mut this = Self {
             config,
             screen: Screen::Connect,
@@ -220,6 +247,8 @@ impl Jellyui {
             up_next: None,
             frame_seq: 0,
             seek_slider,
+            volume_slider,
+            adjusting_volume: false,
             scrubbing: false,
             audio_menu,
             subtitle_menu,
@@ -922,6 +951,7 @@ impl Jellyui {
         self.player_status.paused
             || self.player_status.state != PlayState::Playing
             || self.scrubbing
+            || self.adjusting_volume
             || self.audio_menu.read(cx).is_open()
             || self.subtitle_menu.read(cx).is_open()
     }
@@ -1023,6 +1053,8 @@ impl Jellyui {
                         let frame_changed = this.player.frame_seq() != this.frame_seq;
                         let changed = frame_changed
                             || status.position != this.player_status.position
+                            || status.volume != this.player_status.volume
+                            || status.muted != this.player_status.muted
                             || status.paused != this.player_status.paused
                             || status.buffering != this.player_status.buffering
                             || status.state != this.player_status.state
@@ -1031,6 +1063,17 @@ impl Jellyui {
                         if this.player_status.tracks_version != this.tracks_version {
                             this.tracks_version = this.player_status.tracks_version;
                             this.rebuild_track_menus(cx);
+                        }
+                        if !this.adjusting_volume {
+                            this.volume_slider.update(cx, |s, cx| {
+                                crate::ui::slider::set_range(
+                                    s,
+                                    100.,
+                                    1.,
+                                    this.player_status.volume as f32,
+                                );
+                                cx.notify();
+                            });
                         }
                         if !this.scrubbing && this.player_status.duration > 0. {
                             let (pos, dur) = (

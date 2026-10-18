@@ -13,7 +13,7 @@ video inside the window through an embedded [libmpv](https://mpv.io) core.
   grids with sorting and paging. Series → seasons → episodes. Search across movies,
   shows and episodes.
 - **Embedded playback.** Direct-play through libmpv rendered inside the app: resume
-  from where you left off, seek bar, pause, ±10/30s, audio and subtitle track menus
+  from where you left off, seek bar, pause, ±10/30s, volume and mute, audio and subtitle track menus
   (embedded tracks), fullscreen, keyboard shortcuts. Playback progress is reported back
   to Jellyfin so other clients pick up where you stopped.
 - **Leave the player running.** Escape returns to the library while the video keeps
@@ -108,6 +108,7 @@ MPV_LIB_DIR=/opt/homebrew/lib cargo build
 | `space`, `k` | Play / pause |
 | `←` / `→` | Seek −5s / +5s |
 | `j` / `l` | Seek −10s / +10s |
+| `m` | Mute / unmute |
 | `f` | Toggle fullscreen |
 | `esc` | Leave fullscreen, or return to the library while playback continues |
 

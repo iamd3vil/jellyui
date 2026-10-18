@@ -223,6 +223,24 @@ impl Jellyui {
                             .text_center()
                             .child(s.title.clone()),
                     )
+                    .child(
+                        ghost(
+                            "player.mute",
+                            if s.muted || s.volume == 0. {
+                                LucideIcon::VolumeX
+                            } else {
+                                LucideIcon::Volume2
+                            },
+                            if s.muted { "Unmute" } else { "Mute" },
+                            16.,
+                        )
+                        .on_click(cx.listener(|this, _, _, _| this.player.toggle_mute())),
+                    )
+                    .child(
+                        div()
+                            .w(px(80.))
+                            .child(Slider::new(&self.volume_slider).aria_label("Volume")),
+                    )
                     .child(audio_menu)
                     .child(subtitle_menu)
                     .child(
@@ -328,6 +346,7 @@ impl Jellyui {
                         "right" => this.player.seek_relative(5.),
                         "j" => this.player.seek_relative(-10.),
                         "l" => this.player.seek_relative(10.),
+                        "m" => this.player.toggle_mute(),
                         "f" => window.toggle_fullscreen(),
                         "escape" => {
                             if window.is_fullscreen() {
