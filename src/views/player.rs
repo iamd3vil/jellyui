@@ -351,6 +351,8 @@ impl Jellyui {
                         "j" => this.player.seek_relative(-10.),
                         "l" => this.player.seek_relative(10.),
                         "m" => this.player.toggle_mute(),
+                        "z" => this.player.adjust_subtitle_delay(-0.5),
+                        "x" => this.player.adjust_subtitle_delay(0.5),
                         "f" => window.toggle_fullscreen(),
                         "escape" => {
                             if window.is_fullscreen() {

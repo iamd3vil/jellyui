@@ -16,7 +16,7 @@ video inside the window through an embedded [libmpv](https://mpv.io) core.
 - **Embedded playback.** Direct-play through libmpv rendered inside the app: resume
   from where you left off, seek bar, pause, ±10/30s, volume and mute, audio and subtitle
   track menus (embedded tracks), playback speed from 0.5× to 2×, fullscreen,
-  keyboard shortcuts. Playback progress is reported back
+  subtitle timing adjustments, and keyboard shortcuts. Playback progress is reported back
   to Jellyfin so other clients pick up where you stopped.
 - **Optional next-episode autoplay.** Enable it in the profile menu. Finished episodes
   start the next episode after a cancellable ten-second countdown. Saved per profile,
@@ -114,6 +114,7 @@ MPV_LIB_DIR=/opt/homebrew/lib cargo build
 | `←` / `→` | Seek −5s / +5s |
 | `j` / `l` | Seek −10s / +10s |
 | `m` | Mute / unmute |
+| `z` / `x` | Show subtitles 0.5s earlier / later |
 | `f` | Toggle fullscreen |
 | `esc` | Leave fullscreen, or return to the library while playback continues |
 
@@ -173,6 +174,7 @@ per frame. mpv handles demuxing, decoding (hardware where available), subtitles 
 audio, so anything mpv plays, Jellyui plays.
 
 Progress is posted to Jellyfin on start, every ten seconds while playing, and on stop.
+Subtitle timing can be adjusted or reset in the Subtitles menu; it resets for each video.
 
 ### UI components
 

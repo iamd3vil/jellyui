@@ -101,6 +101,7 @@ pub struct PlayerStatus {
     pub volume: f64,
     pub muted: bool,
     pub speed: f64,
+    pub subtitle_delay: f64,
     pub tracks: Vec<Track>,
     /// Bumped whenever `tracks` changes so menus can be rebuilt lazily.
     pub tracks_version: u64,
@@ -121,6 +122,7 @@ impl Default for PlayerStatus {
             volume: 100.,
             muted: false,
             speed: 1.,
+            subtitle_delay: 0.,
             tracks: Vec::new(),
             tracks_version: 0,
             error: None,
@@ -147,6 +149,8 @@ enum Cmd {
     SetVolume(f64),
     ToggleMute,
     SetSpeed(f64),
+    AdjustSubtitleDelay(f64),
+    ResetSubtitleDelay,
     Stop,
 }
 
@@ -246,6 +250,14 @@ impl Player {
         if speed.is_finite() {
             self.send(Cmd::SetSpeed(speed.clamp(0.5, 2.)));
         }
+    }
+    pub fn adjust_subtitle_delay(&self, seconds: f64) {
+        if seconds.is_finite() {
+            self.send(Cmd::AdjustSubtitleDelay(seconds));
+        }
+    }
+    pub fn reset_subtitle_delay(&self) {
+        self.send(Cmd::ResetSubtitleDelay);
     }
     pub fn stop(&self) {
         self.send(Cmd::Stop);
@@ -369,6 +381,7 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) -> Result<()> {
     mpv.observe_property("volume", Format::Double, 6)?;
     mpv.observe_property("mute", Format::Flag, 7)?;
     mpv.observe_property("speed", Format::Double, 8)?;
+    mpv.observe_property("sub-delay", Format::Double, 9)?;
 
     let mut renderer = renderer;
     let mut session: Option<Session> = None;
@@ -423,6 +436,8 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) -> Result<()> {
                     mpv.set_property("force-media-title", req.title.clone())?;
                     // mpv keeps `pause` across files.
                     mpv.set_property("pause", false)?;
+                    // Subtitle timing belongs to this video, unlike speed and volume.
+                    mpv.set_property("sub-delay", 0.)?;
                     let start = if req.start_secs > 0 {
                         format!("start=+{}", req.start_secs)
                     } else {
@@ -491,6 +506,12 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) -> Result<()> {
                 }
                 Cmd::SetSpeed(speed) => {
                     let _ = mpv.set_property("speed", speed);
+                }
+                Cmd::AdjustSubtitleDelay(seconds) => {
+                    let _ = mpv.command("add", &["sub-delay", &seconds.to_string()]);
+                }
+                Cmd::ResetSubtitleDelay => {
+                    let _ = mpv.set_property("sub-delay", 0.);
                 }
                 Cmd::Stop => {
                     let _ = mpv.command("stop", &[]);
@@ -648,6 +669,7 @@ fn handle_event(event: &Event, shared: &Shared, session: &mut Option<Session>) -
                 ("volume", PropertyData::Double(v)) => status.volume = *v,
                 ("mute", PropertyData::Flag(v)) => status.muted = *v,
                 ("speed", PropertyData::Double(v)) => status.speed = *v,
+                ("sub-delay", PropertyData::Double(v)) => status.subtitle_delay = *v,
                 ("paused-for-cache", PropertyData::Flag(v)) => status.buffering = *v,
                 ("track-list", PropertyData::Str(json)) => {
                     let tracks: Vec<Track> = serde_json::from_str(json).unwrap_or_default();
@@ -898,6 +920,25 @@ mod tests {
             "speed",
             Box::new(move || (p.status().speed - 1.5).abs() < 0.01),
         );
+        player.adjust_subtitle_delay(0.5);
+        player.adjust_subtitle_delay(0.5);
+        let p = player.clone();
+        wait(
+            "subtitle delay",
+            Box::new(move || (p.status().subtitle_delay - 1.).abs() < 0.01),
+        );
+        player.reset_subtitle_delay();
+        let p = player.clone();
+        wait(
+            "subtitle delay reset",
+            Box::new(move || p.status().subtitle_delay.abs() < 0.01),
+        );
+        player.adjust_subtitle_delay(-0.5);
+        let p = player.clone();
+        wait(
+            "subtitles earlier",
+            Box::new(move || (p.status().subtitle_delay + 0.5).abs() < 0.01),
+        );
         // Replacing a playing file must not end the new session.
         player.play(request(2));
         let p = player.clone();
@@ -908,6 +949,7 @@ mod tests {
         thread::sleep(Duration::from_millis(500));
         assert!((player.status().volume - 35.).abs() < 0.1);
         assert!((player.status().speed - 1.5).abs() < 0.01);
+        assert!(player.status().subtitle_delay.abs() < 0.01);
         player.set_speed(1.);
         let p = player.clone();
         wait(

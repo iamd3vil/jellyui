@@ -1196,7 +1196,31 @@ impl Jellyui {
             items
         };
         let audio = build("audio", "", |p, id| p.set_audio(id));
-        let subs = build("sub", "Off", |p, id| p.set_subtitle(id));
+        let mut subs = build("sub", "Off", |p, id| p.set_subtitle(id));
+        subs.push(MenuItem::separator());
+        subs.push(MenuItem::label(
+            "sub.delay",
+            format!("Timing: {:+.1}s", status.subtitle_delay),
+        ));
+        for (id, label, seconds) in [
+            ("sub.earlier", "Show 0.5s earlier", -0.5),
+            ("sub.later", "Show 0.5s later", 0.5),
+        ] {
+            let handle = this.clone();
+            subs.push(MenuItem::new(id, label).on_click(move |_, _, cx| {
+                handle
+                    .update(cx, |t, _| t.player.adjust_subtitle_delay(seconds))
+                    .ok();
+            }));
+        }
+        let handle = this.clone();
+        subs.push(
+            MenuItem::new("sub.reset-delay", "Reset timing").on_click(move |_, _, cx| {
+                handle
+                    .update(cx, |t, _| t.player.reset_subtitle_delay())
+                    .ok();
+            }),
+        );
         self.audio_menu
             .update(cx, |menu, cx| menu.set_items(audio, cx));
         self.subtitle_menu
@@ -1222,16 +1246,20 @@ impl Jellyui {
                             || status.volume != this.player_status.volume
                             || status.muted != this.player_status.muted
                             || status.speed != this.player_status.speed
+                            || status.subtitle_delay != this.player_status.subtitle_delay
                             || status.paused != this.player_status.paused
                             || status.buffering != this.player_status.buffering
                             || status.state != this.player_status.state
                             || status.tracks_version != this.player_status.tracks_version;
                         let speed_changed = status.speed != this.player_status.speed;
+                        let delay_changed =
+                            status.subtitle_delay != this.player_status.subtitle_delay;
                         this.player_status = status;
                         if speed_changed {
                             this.rebuild_speed_menu(cx);
                         }
-                        if this.player_status.tracks_version != this.tracks_version {
+                        if delay_changed || this.player_status.tracks_version != this.tracks_version
+                        {
                             this.tracks_version = this.player_status.tracks_version;
                             this.rebuild_track_menus(cx);
                         }
