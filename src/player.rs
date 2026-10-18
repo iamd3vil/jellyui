@@ -27,7 +27,7 @@ use libmpv2_sys as sys;
 use serde::Deserialize;
 
 use crate::{
-    jellyfin::{Client, Progress, Streams, TICKS_PER_SECOND},
+    jellyfin::{Client, ExternalSubtitle, Progress, Streams, TICKS_PER_SECOND},
     keep_awake::KeepAwake,
 };
 
@@ -42,7 +42,7 @@ pub enum PlayState {
     Ended,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub struct Track {
     pub id: i64,
@@ -65,9 +65,21 @@ pub struct Track {
     /// FFmpeg's stream index, which Jellyfin's stream indexes follow.
     #[serde(default)]
     pub ff_index: Option<i64>,
+    #[serde(default)]
+    pub external_filename: Option<String>,
+    #[serde(skip)]
+    pub jellyfin_index: Option<i64>,
 }
 
 impl Track {
+    fn stream_index(&self) -> Option<i64> {
+        if self.external {
+            self.jellyfin_index
+        } else {
+            self.ff_index
+        }
+    }
+
     pub fn label(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         if let Some(title) = &self.title {
@@ -102,6 +114,7 @@ pub struct PlayerStatus {
     pub muted: bool,
     pub speed: f64,
     pub subtitle_delay: f64,
+    pub subtitle_error: Option<String>,
     pub tracks: Vec<Track>,
     /// Bumped whenever `tracks` changes so menus can be rebuilt lazily.
     pub tracks_version: u64,
@@ -123,6 +136,7 @@ impl Default for PlayerStatus {
             muted: false,
             speed: 1.,
             subtitle_delay: 0.,
+            subtitle_error: None,
             tracks: Vec::new(),
             tracks_version: 0,
             error: None,
@@ -320,8 +334,36 @@ struct Session {
     last_report: Instant,
     /// The tracks Jellyfin picked, applied once the file has loaded.
     defaults: Streams,
+    external_subtitles: Vec<ExternalSubtitle>,
     /// Tracks in the last progress report, to report a new choice right away.
     reported: Streams,
+}
+
+impl Session {
+    fn tracks(&self, mut tracks: Vec<Track>) -> Vec<Track> {
+        tracks.retain(|track| track.kind != "video");
+        for subtitle in &self.external_subtitles {
+            if let Some(track) = tracks.iter_mut().find(|track| {
+                track.external && track.external_filename.as_deref() == Some(&subtitle.url)
+            }) {
+                track.jellyfin_index = Some(subtitle.index);
+                track.forced = subtitle.forced;
+            } else {
+                tracks.push(Track {
+                    id: subtitle.track_id(),
+                    kind: "sub".into(),
+                    external: true,
+                    title: subtitle.title.clone(),
+                    lang: subtitle.language.clone(),
+                    codec: subtitle.codec.clone(),
+                    forced: subtitle.forced,
+                    jellyfin_index: Some(subtitle.index),
+                    ..Default::default()
+                });
+            }
+        }
+        tracks
+    }
 }
 
 struct Renderer {
@@ -396,7 +438,15 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) -> Result<()> {
                 Ok(Event::EndFile(_)) if replaced_ends > 0 => replaced_ends -= 1,
                 Ok(event) => {
                     if let (Event::FileLoaded, Some(active)) = (&event, &session) {
-                        select_tracks(&mpv, active.defaults);
+                        if let Some(subtitle) = active
+                            .external_subtitles
+                            .iter()
+                            .find(|sub| Some(sub.index) == active.defaults.subtitle)
+                            && !load_external_subtitle(&mpv, subtitle, &shared)
+                        {
+                            let _ = mpv.set_property("sid", "no");
+                        }
+                        select_tracks(&mpv, active);
                     }
                     if handle_event(&event, &shared, &mut session) {
                         finish(&shared, &mut session);
@@ -454,10 +504,10 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) -> Result<()> {
                         continue;
                     }
                     // Fetched while mpv opens the file.
-                    let defaults = req
+                    let (defaults, external_subtitles) = req
                         .client
-                        .default_streams(&req.item_id)
-                        .inspect_err(|err| log::warn!("track defaults lookup failed: {err:#}"))
+                        .playback_info(&req.item_id)
+                        .inspect_err(|err| log::warn!("playback info lookup failed: {err:#}"))
                         .unwrap_or_default();
                     let progress = Progress {
                         item_id: req.item_id.clone(),
@@ -475,6 +525,7 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) -> Result<()> {
                         play_session_id: progress.play_session_id,
                         last_report: Instant::now(),
                         defaults,
+                        external_subtitles,
                         reported: defaults,
                     });
                 }
@@ -492,8 +543,18 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) -> Result<()> {
                     let _ = mpv.set_property("aid", value);
                 }
                 Cmd::SetSubtitle(id) => {
-                    let value = id.map(|i| i.to_string()).unwrap_or_else(|| "no".into());
-                    let _ = mpv.set_property("sid", value);
+                    shared.status.lock().unwrap().subtitle_error = None;
+                    if let Some(subtitle) = session.as_ref().and_then(|active| {
+                        active
+                            .external_subtitles
+                            .iter()
+                            .find(|sub| Some(sub.track_id()) == id)
+                    }) {
+                        load_external_subtitle(&mpv, subtitle, &shared);
+                    } else {
+                        let value = id.map(|i| i.to_string()).unwrap_or_else(|| "no".into());
+                        let _ = mpv.set_property("sid", value);
+                    }
                 }
                 Cmd::SetVolume(volume) => {
                     let _ = mpv.set_property("volume", volume);
@@ -523,7 +584,11 @@ fn run(shared: Arc<Shared>, rx: mpsc::Receiver<Cmd>) -> Result<()> {
         // Jellyfin remembers the tracks from these reports.
         if let Some(active) = session.as_mut() {
             let status = shared.status.lock().unwrap();
-            let streams = selected_streams(&status.tracks);
+            let mut streams = selected_streams(&status.tracks);
+            if status.subtitle_error.is_some() && streams.subtitle == Some(-1) {
+                // A failed download must not replace a remembered subtitle with Off.
+                streams.subtitle = active.reported.subtitle;
+            }
             let changed = !status.tracks.is_empty() && streams != active.reported;
             let due = active.last_report.elapsed() >= Duration::from_secs(10);
             if status.state == PlayState::Playing && (changed || due) {
@@ -673,8 +738,10 @@ fn handle_event(event: &Event, shared: &Shared, session: &mut Option<Session>) -
                 ("paused-for-cache", PropertyData::Flag(v)) => status.buffering = *v,
                 ("track-list", PropertyData::Str(json)) => {
                     let tracks: Vec<Track> = serde_json::from_str(json).unwrap_or_default();
-                    let tracks: Vec<Track> =
-                        tracks.into_iter().filter(|t| t.kind != "video").collect();
+                    let tracks = match session.as_ref() {
+                        Some(active) => active.tracks(tracks),
+                        None => tracks.into_iter().filter(|t| t.kind != "video").collect(),
+                    };
                     if tracks != status.tracks {
                         status.tracks = tracks;
                         status.tracks_version += 1;
@@ -728,9 +795,9 @@ fn progress_of(session: &Session, position: f64, paused: bool) -> Progress {
 fn selected_streams(tracks: &[Track]) -> Streams {
     let selected = |kind: &str| tracks.iter().find(|t| t.kind == kind && t.selected);
     Streams {
-        audio: selected("audio").and_then(|t| t.ff_index),
+        audio: selected("audio").and_then(|t| t.stream_index()),
         subtitle: match selected("sub") {
-            Some(track) => track.ff_index,
+            Some(track) => track.stream_index(),
             None => Some(-1),
         },
     }
@@ -741,7 +808,7 @@ fn track_choice(tracks: &[Track], streams: Streams) -> (Option<String>, Option<S
     let find = |kind: &str, index: i64| {
         tracks
             .iter()
-            .find(|t| t.kind == kind && t.ff_index == Some(index))
+            .find(|t| t.id > 0 && t.kind == kind && t.stream_index() == Some(index))
             .map(|t| t.id.to_string())
     };
     let audio = streams.audio.and_then(|i| find("audio", i));
@@ -753,13 +820,30 @@ fn track_choice(tracks: &[Track], streams: Streams) -> (Option<String>, Option<S
     (audio, subtitle)
 }
 
-fn select_tracks(mpv: &Mpv, streams: Streams) {
+fn load_external_subtitle(mpv: &Mpv, subtitle: &ExternalSubtitle, shared: &Shared) -> bool {
+    if let Err(err) = mpv.command(
+        "sub-add",
+        &[
+            &subtitle.url,
+            "cached",
+            subtitle.title.as_deref().unwrap_or(""),
+            subtitle.language.as_deref().unwrap_or(""),
+        ],
+    ) {
+        shared.status.lock().unwrap().subtitle_error =
+            Some(format!("Could not load subtitle: {err}"));
+        return false;
+    }
+    true
+}
+
+fn select_tracks(mpv: &Mpv, session: &Session) {
     let tracks: Vec<Track> = mpv
         .get_property::<String>("track-list")
         .ok()
         .and_then(|json| serde_json::from_str(&json).ok())
         .unwrap_or_default();
-    let (audio, subtitle) = track_choice(&tracks, streams);
+    let (audio, subtitle) = track_choice(&session.tracks(tracks), session.defaults);
     if let Some(id) = audio {
         let _ = mpv.set_property("aid", id);
     }
@@ -788,6 +872,206 @@ fn finish(shared: &Shared, session: &mut Option<Session>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::{
+        io::{BufRead, BufReader, Read, Write},
+        net::TcpListener,
+    };
+
+    struct SubtitleServer {
+        base: String,
+        requests: Arc<Mutex<Vec<(String, bool, String)>>>,
+        default_subtitle: Arc<AtomicU32>,
+        stop: Arc<AtomicBool>,
+        worker: Option<thread::JoinHandle<()>>,
+    }
+
+    impl SubtitleServer {
+        fn start() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let stop = Arc::new(AtomicBool::new(false));
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let default_subtitle = Arc::new(AtomicU32::new(9));
+            let default_index = default_subtitle.clone();
+            let (done, records) = (stop.clone(), requests.clone());
+            let worker = thread::spawn(move || {
+                while !done.load(Ordering::Relaxed) {
+                    let (mut socket, _) = match listener.accept() {
+                        Ok(connection) => connection,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(5));
+                            continue;
+                        }
+                        Err(error) => panic!("mock server accept: {error}"),
+                    };
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut reader = BufReader::new(&mut socket);
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    let path = line.split_whitespace().nth(1).unwrap().to_string();
+                    let mut length = 0;
+                    let mut authenticated = false;
+                    loop {
+                        line.clear();
+                        reader.read_line(&mut line).unwrap();
+                        if line == "\r\n" || line.is_empty() {
+                            break;
+                        }
+                        let header = line.to_ascii_lowercase();
+                        if let Some(value) = header.strip_prefix("content-length:") {
+                            length = value.trim().parse().unwrap();
+                        }
+                        if header.starts_with("authorization:")
+                            && header.contains("token=\"token\"")
+                        {
+                            authenticated = true;
+                        }
+                    }
+                    let mut body = vec![0; length];
+                    reader.read_exact(&mut body).unwrap();
+                    records.lock().unwrap().push((
+                        path.clone(),
+                        authenticated,
+                        String::from_utf8(body).unwrap(),
+                    ));
+                    let (status, content_type, response) = if path
+                        .starts_with("/Items/test/PlaybackInfo")
+                    {
+                        (
+                            "200 OK",
+                            "application/json",
+                            r#"{"MediaSources":[{"Id":"test","DefaultAudioStreamIndex":1,"DefaultSubtitleStreamIndex":9,"MediaStreams":[
+                            {"Index":9,"Type":"Subtitle","IsExternal":true,"IsTextSubtitleStream":true,"Codec":"subrip","DisplayTitle":"English","Language":"eng"},
+                            {"Index":10,"Type":"Subtitle","IsExternal":true,"IsTextSubtitleStream":true,"Codec":"ass","DisplayTitle":"French","Language":"fra"},
+                            {"Index":11,"Type":"Subtitle","IsExternal":true,"IsTextSubtitleStream":true,"Codec":"subrip","DisplayTitle":"Missing"},
+                            {"Index":12,"Type":"Subtitle","IsExternal":true,"IsTextSubtitleStream":true,"Codec":"webvtt","DisplayTitle":"Spanish","Language":"spa"}
+                        ]}]}"#,
+                        )
+                    } else if path.contains("/Subtitles/11/") {
+                        ("404 Not Found", "text/plain", "missing")
+                    } else if path.ends_with("Stream.ass") {
+                        (
+                            "200 OK",
+                            "text/plain",
+                            "[Script Info]\nScriptType: v4.00+\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:29.00,Default,,0,0,0,,French subtitle\n",
+                        )
+                    } else if path.ends_with("Stream.vtt") {
+                        (
+                            "200 OK",
+                            "text/vtt",
+                            "WEBVTT\n\n00:00:00.000 --> 00:00:29.000\nSpanish subtitle\n",
+                        )
+                    } else if path.contains("/Subtitles/") {
+                        (
+                            "200 OK",
+                            "text/plain",
+                            "1\n00:00:00,000 --> 00:00:29,000\nSubtitle test\n",
+                        )
+                    } else {
+                        ("200 OK", "application/json", "{}")
+                    };
+                    let response = response.replace(
+                        "\"DefaultSubtitleStreamIndex\":9",
+                        &format!(
+                            "\"DefaultSubtitleStreamIndex\":{}",
+                            default_index.load(Ordering::Relaxed)
+                        ),
+                    );
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                        response.len()
+                    );
+                    // A failed subtitle load may close the socket before reading the body.
+                    let _ = socket.write_all(response.as_bytes());
+                }
+            });
+            Self {
+                base,
+                requests,
+                default_subtitle,
+                stop,
+                worker: Some(worker),
+            }
+        }
+    }
+
+    impl Drop for SubtitleServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            self.worker.take().unwrap().join().unwrap();
+        }
+    }
+
+    #[test]
+    fn external_tracks_keep_jellyfin_indexes_and_do_not_duplicate_placeholders() {
+        let subtitle = ExternalSubtitle {
+            index: 9,
+            url: "https://media.example.com/sub.srt".into(),
+            title: Some("English".into()),
+            language: Some("eng".into()),
+            codec: Some("subrip".into()),
+            forced: true,
+        };
+        let session = Session {
+            client: Client::new("https://media.example.com", "test"),
+            item_id: "test".into(),
+            play_session_id: "test".into(),
+            last_report: Instant::now(),
+            defaults: Streams::default(),
+            reported: Streams::default(),
+            external_subtitles: vec![subtitle],
+        };
+        let unloaded = session.tracks(Vec::new());
+        assert_eq!(unloaded[0].id, -10);
+        assert_eq!(
+            track_choice(
+                &unloaded,
+                Streams {
+                    audio: None,
+                    subtitle: Some(9)
+                }
+            )
+            .1,
+            None
+        );
+        let tracks: Vec<Track> = serde_json::from_str(r#"[
+            {"id":1,"type":"sub","ff-index":0},
+            {"id":2,"type":"sub","ff-index":0,"external":true,"external-filename":"https://media.example.com/sub.srt","selected":true}
+        ]"#).unwrap();
+        let tracks = session.tracks(tracks);
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[1].stream_index(), Some(9));
+        assert!(tracks[1].forced);
+        assert_eq!(selected_streams(&tracks).subtitle, Some(9));
+        assert_eq!(
+            track_choice(
+                &tracks,
+                Streams {
+                    audio: None,
+                    subtitle: Some(9)
+                }
+            )
+            .1
+            .as_deref(),
+            Some("2")
+        );
+        assert_eq!(
+            track_choice(
+                &tracks,
+                Streams {
+                    audio: None,
+                    subtitle: Some(0)
+                }
+            )
+            .1
+            .as_deref(),
+            Some("1")
+        );
+    }
 
     #[test]
     fn parses_track_list_json() {
@@ -826,6 +1110,12 @@ mod tests {
     #[test]
     fn embedded_playback_roundtrip() {
         let media = std::env::temp_dir().join("jellyui-embedded-test.mp4");
+        let embedded_subtitle = std::env::temp_dir().join("jellyui-embedded-test.srt");
+        std::fs::write(
+            &embedded_subtitle,
+            "1\n00:00:00,000 --> 00:00:30,000\nEmbedded subtitle\n",
+        )
+        .unwrap();
         let encoded = std::process::Command::new("ffmpeg")
             .args([
                 "-y",
@@ -837,6 +1127,9 @@ mod tests {
                 "testsrc=duration=30:size=320x240:rate=10",
             ])
             .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=30"])
+            .arg("-i")
+            .arg(&embedded_subtitle)
+            .args(["-c:s", "mov_text"])
             .args([
                 "-c:v",
                 "libx264",
@@ -852,7 +1145,8 @@ mod tests {
             eprintln!("ffmpeg not available; skipping");
             return;
         }
-        let client = Client::new("http://127.0.0.1:9", "test-device").with_session("token", "user");
+        let server = SubtitleServer::start();
+        let client = Client::new(&server.base, "test-device").with_session("token", "user");
         let player = Player::default();
         player.set_target_size(640, 480);
         let request = |start_secs| PlayRequest {
@@ -889,7 +1183,92 @@ mod tests {
             Box::new(move || p.status().tracks.iter().any(|t| t.kind == "audio")),
         );
         // Remembered tracks are matched by FFmpeg index; mpv must report it.
-        assert!(player.status().tracks.iter().all(|t| t.ff_index.is_some()));
+        assert!(
+            player
+                .status()
+                .tracks
+                .iter()
+                .filter(|t| t.id > 0)
+                .all(|t| t.ff_index.is_some())
+        );
+        let p = player.clone();
+        wait(
+            "remembered external subtitle",
+            Box::new(move || selected_streams(&p.status().tracks).subtitle == Some(9)),
+        );
+        assert!(
+            server
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(path, _, _)| !path.contains("/Subtitles/10/"))
+        );
+        player.set_subtitle(Some(-11));
+        let p = player.clone();
+        wait(
+            "external subtitle selected",
+            Box::new(move || selected_streams(&p.status().tracks).subtitle == Some(10)),
+        );
+        let records = server.requests.clone();
+        wait(
+            "external index reported",
+            Box::new(move || {
+                records.lock().unwrap().iter().any(|(path, _, body)| {
+            path == "/Sessions/Playing/Progress" && serde_json::from_str::<serde_json::Value>(body).unwrap()["SubtitleStreamIndex"] == 10
+        })
+            }),
+        );
+        player.set_subtitle(Some(-11));
+        let p = player.clone();
+        wait(
+            "cached external subtitle",
+            Box::new(move || selected_streams(&p.status().tracks).subtitle == Some(10)),
+        );
+        player.set_subtitle(Some(-12));
+        let p = player.clone();
+        wait(
+            "subtitle failure is nonfatal",
+            Box::new(move || p.status().subtitle_error.is_some()),
+        );
+        assert_eq!(player.status().state, PlayState::Playing);
+        assert_eq!(selected_streams(&player.status().tracks).subtitle, Some(10));
+        assert_eq!(
+            server
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(path, _, _)| path.contains("/Subtitles/10/"))
+                .count(),
+            1
+        );
+        player.set_subtitle(Some(-13));
+        let p = player.clone();
+        wait(
+            "WebVTT subtitle selected",
+            Box::new(move || selected_streams(&p.status().tracks).subtitle == Some(12)),
+        );
+        assert!(player.status().subtitle_error.is_none());
+        let embedded = player
+            .status()
+            .tracks
+            .iter()
+            .find(|t| t.kind == "sub" && !t.external)
+            .unwrap()
+            .id;
+        player.set_subtitle(Some(embedded));
+        let p = player.clone();
+        wait(
+            "embedded subtitle selected",
+            Box::new(move || selected_streams(&p.status().tracks).subtitle == Some(2)),
+        );
+        player.set_subtitle(None);
+        let p = player.clone();
+        wait(
+            "subtitles off",
+            Box::new(move || selected_streams(&p.status().tracks).subtitle == Some(-1)),
+        );
         player.set_volume(35.);
         let p = player.clone();
         wait(
@@ -973,12 +1352,36 @@ mod tests {
         player.acknowledge_end();
         assert_eq!(player.status().state, PlayState::Idle);
 
+        server.default_subtitle.store(11, Ordering::Relaxed);
         player.play(request(28));
+        let p = player.clone();
+        wait(
+            "missing remembered subtitle",
+            Box::new(move || p.status().subtitle_error.is_some()),
+        );
+        player.set_audio(None);
+        let records = server.requests.clone();
+        wait(
+            "failed default remains remembered",
+            Box::new(move || {
+                records.lock().unwrap().iter().any(|(path, _, body)| {
+            path == "/Sessions/Playing/Progress" && serde_json::from_str::<serde_json::Value>(body).unwrap()["SubtitleStreamIndex"] == 11
+        })
+            }),
+        );
         let p = player.clone();
         wait(
             "played to the end",
             Box::new(move || p.status().state == PlayState::Ended),
         );
         assert!(player.status().finished);
+        assert!(
+            server
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(_, authenticated, _)| *authenticated)
+        );
     }
 }

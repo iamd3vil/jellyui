@@ -15,9 +15,9 @@ video inside the window through an embedded [libmpv](https://mpv.io) core.
   Series → seasons → episodes. Search across movies, shows and episodes.
 - **Embedded playback.** Direct-play through libmpv rendered inside the app: resume
   from where you left off, seek bar, pause, ±10/30s, volume and mute, audio and subtitle
-  track menus (embedded tracks), playback speed from 0.5× to 2×, fullscreen,
-  subtitle timing adjustments, and keyboard shortcuts. Playback progress is reported back
-  to Jellyfin so other clients pick up where you stopped.
+  track menus for embedded and Jellyfin-managed external text subtitles, playback
+  speed from 0.5× to 2×, fullscreen, subtitle timing adjustments, and keyboard shortcuts.
+  Playback progress is reported back to Jellyfin so other clients pick up where you stopped.
 - **Optional next-episode autoplay.** Enable it in the profile menu. Finished episodes
   start the next episode after a cancellable ten-second countdown. Saved per profile,
   off by default.
@@ -192,8 +192,8 @@ in `Cargo.toml` aligned with the registry you install from.
 
 ## Known limitations
 
-- Only subtitle tracks embedded in the media file are offered; external subtitle files
-  managed by Jellyfin are not loaded yet.
+- External bitmap subtitle files are not loaded yet; Jellyfin-managed external text
+  subtitles, including SRT, ASS/SSA and WebVTT, are supported.
 - Music, books, live TV and photo libraries are hidden from the sidebar.
 - Transcoding is not requested; playback relies on mpv's broad direct-play support.
 - Linux release builds decode video in software; build from source against a system

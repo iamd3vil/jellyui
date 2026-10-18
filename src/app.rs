@@ -1251,6 +1251,11 @@ impl Jellyui {
                             || status.buffering != this.player_status.buffering
                             || status.state != this.player_status.state
                             || status.tracks_version != this.player_status.tracks_version;
+                        if status.subtitle_error != this.player_status.subtitle_error
+                            && let Some(error) = &status.subtitle_error
+                        {
+                            this.toast("Subtitle unavailable", error.clone(), cx);
+                        }
                         let speed_changed = status.speed != this.player_status.speed;
                         let delay_changed =
                             status.subtitle_delay != this.player_status.subtitle_delay;

@@ -359,15 +359,18 @@ impl Client {
     }
 
     /// The audio and subtitle streams Jellyfin picks for this user: the ones last
-    /// played with the item, else the user's language preferences.
-    pub fn default_streams(&self, item_id: &str) -> Result<Streams> {
+    /// played with the item, else the user's language preferences, plus external subtitles.
+    pub fn playback_info(&self, item_id: &str) -> Result<(Streams, Vec<ExternalSubtitle>)> {
         let user = self.user()?.to_string();
         let info: PlaybackInfo = self.send(
             "POST",
             &format!("/Items/{item_id}/PlaybackInfo"),
             &[("userId", user)],
         )?;
-        Ok(info.default_streams(item_id))
+        Ok((
+            info.default_streams(item_id),
+            info.external_subtitles(self, item_id),
+        ))
     }
 
     // ----- Playback reporting ----------------------------------------------
@@ -656,14 +659,93 @@ struct MediaSource {
     default_audio_stream_index: Option<i64>,
     #[serde(default)]
     default_subtitle_stream_index: Option<i64>,
+    #[serde(default)]
+    media_streams: Vec<MediaStream>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct MediaStream {
+    index: i64,
+    #[serde(rename = "Type")]
+    kind: String,
+    #[serde(default)]
+    is_external: bool,
+    #[serde(default)]
+    is_text_subtitle_stream: bool,
+    codec: Option<String>,
+    display_title: Option<String>,
+    language: Option<String>,
+    #[serde(default)]
+    is_forced: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExternalSubtitle {
+    pub index: i64,
+    pub url: String,
+    pub title: Option<String>,
+    pub language: Option<String>,
+    pub codec: Option<String>,
+    pub forced: bool,
+}
+
+impl ExternalSubtitle {
+    // mpv track ids are positive; negative ids identify tracks not loaded yet.
+    pub fn track_id(&self) -> i64 {
+        -self.index - 1
+    }
 }
 
 impl PlaybackInfo {
+    fn source(&self, item_id: &str) -> Option<&MediaSource> {
+        self.media_sources
+            .iter()
+            .find(|s| s.id == item_id)
+            .or(self.media_sources.first())
+    }
+
+    fn external_subtitles(&self, client: &Client, item_id: &str) -> Vec<ExternalSubtitle> {
+        let Some(source) = self.source(item_id) else {
+            return Vec::new();
+        };
+        source
+            .media_streams
+            .iter()
+            .filter(|stream| {
+                stream.kind == "Subtitle"
+                    && stream.is_external
+                    && stream.is_text_subtitle_stream
+                    && (0..i64::MAX).contains(&stream.index)
+            })
+            .map(|stream| {
+                let format = match stream.codec.as_deref() {
+                    Some("ass") => "ass",
+                    Some("ssa") => "ssa",
+                    Some("webvtt" | "vtt") => "vtt",
+                    _ => "srt",
+                };
+                ExternalSubtitle {
+                    index: stream.index,
+                    url: format!(
+                        "{}/Videos/{}/{}/Subtitles/{}/Stream.{format}",
+                        client.base,
+                        urlencode(item_id),
+                        urlencode(&source.id),
+                        stream.index
+                    ),
+                    title: stream.display_title.clone(),
+                    language: stream.language.clone(),
+                    codec: stream.codec.clone(),
+                    forced: stream.is_forced,
+                }
+            })
+            .collect()
+    }
+
     /// Defaults of the source `stream_url` plays, which has the item's id.
     fn default_streams(&self, item_id: &str) -> Streams {
-        let source = self.media_sources.iter().find(|s| s.id == item_id);
-        source
-            .or(self.media_sources.first())
+        self.source(item_id)
             .map_or_else(Streams::default, |s| Streams {
                 audio: s.default_audio_stream_index,
                 subtitle: s.default_subtitle_stream_index,
@@ -811,5 +893,33 @@ mod tests {
         assert_eq!(body["AudioStreamIndex"], 2);
         assert_eq!(body["SubtitleStreamIndex"], -1);
         assert!(progress.body(false).get("AudioStreamIndex").is_none());
+    }
+    #[test]
+    fn external_subtitles_use_the_selected_source_and_authenticated_server_routes() {
+        let info: PlaybackInfo = serde_json::from_str(r#"{"MediaSources":[
+            {"Id":"other","MediaStreams":[{"Index":7,"Type":"Subtitle","IsExternal":true,"IsTextSubtitleStream":true,"Codec":"subrip"}]},
+            {"Id":"e 1","MediaStreams":[
+                {"Index":8,"Type":"Subtitle","IsExternal":true,"IsTextSubtitleStream":true,"Codec":"ass","DisplayTitle":"Japanese","Language":"jpn","IsForced":true,"DeliveryUrl":"https://other.example.com/sub.ass"},
+                {"Index":9,"Type":"Subtitle","IsExternal":true,"IsTextSubtitleStream":true,"Codec":"subrip"},
+                {"Index":10,"Type":"Subtitle","IsExternal":true,"IsTextSubtitleStream":true,"Codec":"webvtt"},
+                {"Index":11,"Type":"Subtitle","IsExternal":true,"IsTextSubtitleStream":false,"Codec":"hdmv_pgs_subtitle"},
+                {"Index":12,"Type":"Subtitle","IsExternal":false,"IsTextSubtitleStream":true,"Codec":"ass"},
+                {"Index":-1,"Type":"Subtitle","IsExternal":true,"IsTextSubtitleStream":true,"Codec":"ass"}
+            ]}]}"#).unwrap();
+        let client = Client::new("https://media.example.com/jellyfin", "test");
+        let subtitles = info.external_subtitles(&client, "e 1");
+        assert_eq!(subtitles.len(), 3);
+        for (sub, extension) in subtitles.iter().zip(["ass", "srt", "vtt"]) {
+            assert_eq!(
+                sub.url,
+                format!(
+                    "https://media.example.com/jellyfin/Videos/e%201/e%201/Subtitles/{}/Stream.{extension}",
+                    sub.index
+                )
+            );
+            assert!(sub.track_id() < 0);
+        }
+        assert_eq!(subtitles[0].language.as_deref(), Some("jpn"));
+        assert!(subtitles[0].forced);
     }
 }
