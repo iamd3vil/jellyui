@@ -104,6 +104,7 @@ pub struct LibraryData {
     pub items: Vec<Item>,
     pub total: usize,
     pub sort: &'static str,
+    pub watched: Option<bool>,
 }
 
 pub struct DetailData {
@@ -445,7 +446,8 @@ impl Jellyui {
         if let Some(page) = self.history.pop() {
             self.page = page;
             self.next_generation();
-            if matches!(&self.page, Page::Library(data) if data.view.is_none()) {
+            if matches!(&self.page, Page::Library(data) if data.view.is_none() || data.watched.is_some())
+            {
                 self.load_page(cx);
             }
             cx.notify();
@@ -469,6 +471,7 @@ impl Jellyui {
             items: Vec::new(),
             total: 0,
             sort: "SortName",
+            watched: None,
         });
         self.load_page(cx);
         cx.notify();
@@ -483,6 +486,7 @@ impl Jellyui {
             items: Vec::new(),
             total: 0,
             sort: "SortName",
+            watched: None,
         });
         self.load_page(cx);
         cx.notify();
@@ -498,6 +502,7 @@ impl Jellyui {
                 items: Vec::new(),
                 total: 0,
                 sort: "SortName",
+                watched: None,
             }),
             cx,
         );
@@ -601,7 +606,12 @@ impl Jellyui {
             return;
         }
         data.loading = true;
-        let query = library_query(data.view.as_ref(), data.sort, data.items.len());
+        let query = library_query(
+            data.view.as_ref(),
+            data.sort,
+            data.watched,
+            data.items.len(),
+        );
         let generation = self.generation;
         self.fetch(
             cx,
@@ -629,6 +639,16 @@ impl Jellyui {
     pub fn set_sort(&mut self, sort: &'static str, cx: &mut Context<Self>) {
         if let Page::Library(data) = &mut self.page {
             data.sort = sort;
+            data.items.clear();
+            data.total = 0;
+            self.load_page(cx);
+            cx.notify();
+        }
+    }
+
+    pub fn set_watched_filter(&mut self, watched: Option<bool>, cx: &mut Context<Self>) {
+        if let Page::Library(data) = &mut self.page {
+            data.watched = watched;
             data.items.clear();
             data.total = 0;
             self.load_page(cx);
@@ -691,7 +711,7 @@ impl Jellyui {
             }
             Page::Library(data) => {
                 data.loading = true;
-                let query = library_query(data.view.as_ref(), data.sort, 0);
+                let query = library_query(data.view.as_ref(), data.sort, data.watched, 0);
                 self.fetch(
                     cx,
                     move |client| client.items(&query),
@@ -1145,7 +1165,12 @@ fn next_episode_of(client: &Client, item: &Item) -> Option<Item> {
         .flatten()
 }
 
-pub fn library_query(view: Option<&Item>, sort: &str, start: usize) -> ItemQuery {
+pub fn library_query(
+    view: Option<&Item>,
+    sort: &str,
+    watched: Option<bool>,
+    start: usize,
+) -> ItemQuery {
     let include_types = match view.and_then(|v| v.collection_type.as_deref()) {
         Some("movies") => vec!["Movie".to_string()],
         Some("tvshows") => vec!["Series".to_string()],
@@ -1153,9 +1178,16 @@ pub fn library_query(view: Option<&Item>, sort: &str, start: usize) -> ItemQuery
         _ => Vec::new(),
     };
     let recursive = !include_types.is_empty();
+    let mut filters = Vec::new();
+    if view.is_none() {
+        filters.push("IsFavorite");
+    }
+    if let Some(played) = watched {
+        filters.push(if played { "IsPlayed" } else { "IsUnplayed" });
+    }
     ItemQuery {
         parent_id: view.map(|v| v.id.clone()),
-        filters: view.is_none().then(|| "IsFavorite".into()),
+        filters: (!filters.is_empty()).then(|| filters.join(",")),
         include_types,
         recursive: Some(recursive),
         sort_by: Some(sort.to_string()),
@@ -1200,7 +1232,7 @@ mod tests {
 
     #[test]
     fn favorites_query_is_global_and_paginated() {
-        let q = library_query(None, "DateCreated", PAGE_SIZE);
+        let q = library_query(None, "DateCreated", None, PAGE_SIZE);
         assert_eq!(q.parent_id, None);
         assert_eq!(q.filters.as_deref(), Some("IsFavorite"));
         assert_eq!(q.include_types, ["Movie", "Series", "Episode"]);
@@ -1214,10 +1246,33 @@ mod tests {
             collection_type: Some("movies".into()),
             ..Default::default()
         };
-        let q = library_query(Some(&view), "SortName", 0);
+        let q = library_query(Some(&view), "SortName", None, 0);
         assert_eq!(q.parent_id.as_deref(), Some("movies"));
         assert_eq!(q.filters, None);
         assert_eq!(q.include_types, ["Movie"]);
         assert_eq!(q.sort_order.as_deref(), Some("Ascending"));
+    }
+    #[test]
+    fn watched_filters_combine_with_favorites_and_survive_pagination() {
+        let view = Item {
+            id: "shows".into(),
+            collection_type: Some("tvshows".into()),
+            ..Default::default()
+        };
+        for (watched, filter) in [(true, "IsPlayed"), (false, "IsUnplayed")] {
+            for start in [0, PAGE_SIZE] {
+                let q = library_query(Some(&view), "SortName", Some(watched), start);
+                assert_eq!(q.filters.as_deref(), Some(filter));
+                assert_eq!(q.parent_id.as_deref(), Some("shows"));
+                assert_eq!(q.include_types, ["Series"]);
+                assert_eq!(q.start, Some(start));
+                let q = library_query(None, "SortName", Some(watched), start);
+                assert_eq!(
+                    q.filters.as_deref(),
+                    Some(format!("IsFavorite,{filter}").as_str())
+                );
+                assert_eq!(q.start, Some(start));
+            }
+        }
     }
 }

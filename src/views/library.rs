@@ -37,6 +37,7 @@ impl Jellyui {
         let header = div()
             .px(px(28.))
             .flex()
+            .flex_wrap()
             .items_center()
             .justify_between()
             .gap(px(12.))
@@ -79,6 +80,30 @@ impl Jellyui {
                             }
                         }),
                 )
+                .child(
+                    Tabs::new("library.watched")
+                        .aria_label("Watched status")
+                        .selected(match data.watched {
+                            None => "all",
+                            Some(false) => "unwatched",
+                            Some(true) => "watched",
+                        })
+                        .item(Tab::new("library.watched.all", "all", "All"))
+                        .item(Tab::new("library.watched.no", "unwatched", "Unwatched"))
+                        .item(Tab::new("library.watched.yes", "watched", "Watched"))
+                        .on_change({
+                            let this = cx.weak_entity();
+                            move |value, _, cx| {
+                                let watched = match value.as_ref() {
+                                    "unwatched" => Some(false),
+                                    "watched" => Some(true),
+                                    _ => None,
+                                };
+                                this.update(cx, |this, cx| this.set_watched_filter(watched, cx))
+                                    .ok();
+                            }
+                        }),
+                )
             });
 
         let body = if data.loading && data.items.is_empty() {
@@ -91,12 +116,16 @@ impl Jellyui {
             )
         } else if data.items.is_empty() {
             empty_state(
-                if data.view.is_none() {
+                if data.watched.is_some() {
+                    "No matching titles"
+                } else if data.view.is_none() {
                     "No favorites yet"
                 } else {
                     "Empty library"
                 },
-                if data.view.is_none() {
+                if data.watched.is_some() {
+                    "Try a different watched filter."
+                } else if data.view.is_none() {
                     "Favorite a movie, show or episode to find it here."
                 } else {
                     "No items were returned for this library."

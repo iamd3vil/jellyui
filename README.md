@@ -10,7 +10,8 @@ video inside the window through an embedded [libmpv](https://mpv.io) core.
 - **Multiple servers, multiple profiles.** Save any number of Jellyfin servers and any
   number of user profiles per server. Switch between them from the sidebar footer.
 - **Browse.** Home with Continue Watching, Next Up and Latest per library. Library
-  grids with sorting and paging. Favorites across movies, shows and episodes.
+  grids with sorting, watched/unwatched filters and paging. Favorites across movies,
+  shows and episodes.
   Series → seasons → episodes. Search across movies, shows and episodes.
 - **Embedded playback.** Direct-play through libmpv rendered inside the app: resume
   from where you left off, seek bar, pause, ±10/30s, volume and mute, audio and subtitle
