@@ -17,6 +17,9 @@ video inside the window through an embedded [libmpv](https://mpv.io) core.
   from where you left off, seek bar, pause, ±10/30s, volume and mute, audio and subtitle
   track menus (embedded tracks), fullscreen, keyboard shortcuts. Playback progress is reported back
   to Jellyfin so other clients pick up where you stopped.
+- **Optional next-episode autoplay.** Enable it in the profile menu. Finished episodes
+  start the next episode after a cancellable ten-second countdown. Saved per profile,
+  off by default.
 - **Leave the player running.** Escape returns to the library while the video keeps
   playing; a now-playing bar brings it back.
 - **Dark and light appearance**, Geist typography, GPU-rendered UI.

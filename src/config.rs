@@ -45,6 +45,8 @@ pub struct Profile {
     pub token: String,
     #[serde(default)]
     pub image_tag: Option<String>,
+    #[serde(default)]
+    pub autoplay_next: bool,
 }
 
 impl Config {
@@ -170,6 +172,7 @@ mod tests {
                 name: "U".into(),
                 token: "t".into(),
                 image_tag: None,
+                autoplay_next: false,
             },
         );
         config.upsert_profile(
@@ -179,6 +182,7 @@ mod tests {
                 name: "U2".into(),
                 token: "t2".into(),
                 image_tag: None,
+                autoplay_next: false,
             },
         );
         assert_eq!(config.server("s").unwrap().profiles.len(), 1);
@@ -194,5 +198,17 @@ mod tests {
         });
         assert_eq!(config.servers.len(), 1);
         assert_eq!(config.server("s").unwrap().name, "Renamed");
+    }
+    #[test]
+    fn autoplay_is_opt_in_and_saved_per_profile() {
+        let old = r#"{"user_id":"u","name":"User","token":"test-token"}"#;
+        let mut profile: Profile = serde_json::from_str(old).unwrap();
+        assert!(!profile.autoplay_next);
+        profile.autoplay_next = true;
+        let restored: Profile =
+            serde_json::from_str(&serde_json::to_string(&profile).unwrap()).unwrap();
+        assert!(restored.autoplay_next);
+        let other: Profile = serde_json::from_str(old).unwrap();
+        assert!(!other.autoplay_next);
     }
 }

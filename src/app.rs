@@ -151,6 +151,9 @@ pub struct Jellyui {
     pub current_frame: Option<Arc<RenderImage>>,
     /// Item handed to the player last.
     playing_id: Option<String>,
+    playing_profile: Option<(String, String)>,
+    pub autoplay_remaining: Option<u8>,
+    autoplay_task: Option<Task<()>>,
     /// The episode after the playing one: offered near the end and once it finishes.
     pub up_next: Option<Item>,
     frame_seq: u64,
@@ -245,6 +248,9 @@ impl Jellyui {
             player_open: false,
             current_frame: None,
             playing_id: None,
+            playing_profile: None,
+            autoplay_remaining: None,
+            autoplay_task: None,
             up_next: None,
             frame_seq: 0,
             seek_slider,
@@ -342,14 +348,16 @@ impl Jellyui {
             .image_tag
             .as_ref()
             .map(|tag| client.user_image_url(&profile.user_id, tag));
-        self.session = Some(Session {
+        let session = Session {
             server_id: server.id.clone(),
             server_name: server.name.clone(),
             user_id: profile.user_id.clone(),
             user_name: profile.name.clone(),
             user_image,
             client,
-        });
+        };
+        self.cancel_autoplay(cx);
+        self.session = Some(session);
         self.config.active = Some((server_id.to_string(), user_id.to_string()));
         self.save_config(cx);
         self.screen = Screen::Main;
@@ -364,6 +372,7 @@ impl Jellyui {
     }
 
     pub fn sign_out(&mut self, cx: &mut Context<Self>) {
+        self.cancel_autoplay(cx);
         if let Some(session) = self.session.take() {
             self.config
                 .remove_profile(&session.server_id, &session.user_id);
@@ -377,6 +386,7 @@ impl Jellyui {
     }
 
     pub fn show_connect(&mut self, cx: &mut Context<Self>) {
+        self.cancel_autoplay(cx);
         if let Some(session) = &self.session {
             self.connect.selected_server = Some(session.server_id.clone());
         }
@@ -936,6 +946,7 @@ impl Jellyui {
     }
 
     pub fn play(&mut self, item: &Item, resume: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_autoplay(cx);
         let Some(session) = &self.session else { return };
         let start_secs = if resume { item.resume_secs() } else { 0 };
         self.player.play(PlayRequest {
@@ -948,15 +959,18 @@ impl Jellyui {
         self.player_status = self.player.status();
         self.player_open = true;
         self.playing_id = Some(item.id.clone());
+        self.playing_profile = Some((session.server_id.clone(), session.user_id.clone()));
         self.up_next = None;
         let (client, item) = (session.client.clone(), item.clone());
+        let playing_profile = self.playing_profile.clone();
         self.fetch_with(
             client,
             cx,
             move |client| Ok(next_episode_of(&client, &item).map(|next| (item.id, next))),
-            |this, result, cx| {
+            move |this, result, cx| {
                 if let Ok(Some((id, next))) = result
                     && this.playing_id.as_ref() == Some(&id)
+                    && this.playing_profile == playing_profile
                 {
                     this.up_next = Some(next);
                     cx.notify();
@@ -967,7 +981,7 @@ impl Jellyui {
         self.show_controls();
         self.tracks_version = 0;
         self.rebuild_track_menus(cx);
-        self.start_player_poll(cx);
+        self.start_player_poll(window, cx);
         cx.notify();
     }
 
@@ -975,6 +989,90 @@ impl Jellyui {
         if let Some(next) = self.up_next.clone() {
             self.play(&next, next.resume_secs() > 0, window, cx);
         }
+    }
+
+    pub fn autoplay_enabled(&self) -> bool {
+        self.session
+            .as_ref()
+            .and_then(|session| {
+                self.config
+                    .server(&session.server_id)?
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.user_id == session.user_id)
+            })
+            .is_some_and(|profile| profile.autoplay_next)
+    }
+
+    pub fn toggle_autoplay(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = &self.session else { return };
+        let Some(profile) = self
+            .config
+            .server_mut(&session.server_id)
+            .and_then(|server| {
+                server
+                    .profiles
+                    .iter_mut()
+                    .find(|p| p.user_id == session.user_id)
+            })
+        else {
+            return;
+        };
+        profile.autoplay_next = !profile.autoplay_next;
+        self.cancel_autoplay(cx);
+        self.save_config(cx);
+        self.rebuild_menu(cx);
+        cx.notify();
+    }
+
+    pub fn cancel_autoplay(&mut self, cx: &mut Context<Self>) {
+        self.autoplay_remaining = None;
+        self.autoplay_task = None;
+        cx.notify();
+    }
+
+    fn can_autoplay(&self) -> bool {
+        self.screen == Screen::Main
+            && self.player_open
+            && self.up_next.is_some()
+            && self.playing_profile == self.config.active
+            && self.autoplay_enabled()
+    }
+
+    fn start_autoplay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_autoplay() {
+            return;
+        }
+        self.autoplay_remaining = Some(10);
+        self.autoplay_task = Some(cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let keep_going = this
+                    .update_in(cx, |this, window, cx| {
+                        if !this.can_autoplay() {
+                            this.autoplay_remaining = None;
+                            cx.notify();
+                            return false;
+                        }
+                        match this.autoplay_remaining {
+                            Some(1) => {
+                                this.play_up_next(window, cx);
+                                false
+                            }
+                            Some(seconds) => {
+                                this.autoplay_remaining = Some(seconds - 1);
+                                cx.notify();
+                                true
+                            }
+                            None => false,
+                        }
+                    })
+                    .unwrap_or(false);
+                if !keep_going {
+                    break;
+                }
+            }
+        }));
     }
 
     /// Called on pointer activity over the video; controls hide again after a delay.
@@ -994,6 +1092,7 @@ impl Jellyui {
     }
 
     pub fn close_player_view(&mut self, cx: &mut Context<Self>) {
+        self.cancel_autoplay(cx);
         self.player_open = false;
         cx.notify();
     }
@@ -1074,8 +1173,8 @@ impl Jellyui {
             .update(cx, |menu, cx| menu.set_items(subs, cx));
     }
 
-    fn start_player_poll(&mut self, cx: &mut Context<Self>) {
-        self.player_poll = Some(cx.spawn(async move |this, cx| {
+    fn start_player_poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.player_poll = Some(cx.spawn_in(window, async move |this, cx| {
             loop {
                 let fast = this
                     .read_with(cx, |this, _| this.player_open)
@@ -1084,7 +1183,7 @@ impl Jellyui {
                     .timer(Duration::from_millis(if fast { 8 } else { 500 }))
                     .await;
                 let keep_going = this
-                    .update(cx, |this, cx| {
+                    .update_in(cx, |this, window, cx| {
                         let status = this.player.status();
                         let ended = status.state == PlayState::Ended;
                         let frame_changed = this.player.frame_seq() != this.frame_seq;
@@ -1132,6 +1231,9 @@ impl Jellyui {
                             }
                             this.player.acknowledge_end();
                             this.player_status = this.player.status();
+                            if this.player_open {
+                                this.start_autoplay(window, cx);
+                            }
                             this.load_page(cx);
                         }
                         let idle = this.last_pointer_activity.elapsed() > CONTROLS_HIDE_AFTER;
@@ -1274,5 +1376,128 @@ mod tests {
                 assert_eq!(q.start, Some(start));
             }
         }
+    }
+    fn autoplay_window(cx: &mut gpui_kit::TestAppContext) -> gpui_kit::WindowHandle<Jellyui> {
+        cx.update(crate::init);
+        cx.add_window(|window, cx| {
+            let mut app = Jellyui::new(Config::default(), window, cx);
+            app.config = serde_json::from_str(r#"{
+                "servers":[{"id":"server","name":"Server","url":"http://127.0.0.1:9",
+                    "profiles":[{"user_id":"user","name":"User","token":"test-token","autoplay_next":true}]}],
+                "active":["server","user"]
+            }"#).unwrap();
+            app.session = Some(Session {
+                server_id: "server".into(), server_name: "Server".into(),
+                user_id: "user".into(), user_name: "User".into(), user_image: None,
+                client: Client::new("http://127.0.0.1:9", "test"),
+            });
+            app.screen = Screen::Main;
+            app.player_open = true;
+            app.playing_profile = app.config.active.clone();
+            app.up_next = Some(Item { id: "next".into(), kind: "Episode".into(), ..Default::default() });
+            app
+        })
+    }
+
+    #[gpui_kit::test]
+    fn autoplay_countdown_cancels_when_leaving_the_player(cx: &mut gpui_kit::TestAppContext) {
+        let window = autoplay_window(cx);
+        window
+            .update(cx, |app, window, cx| {
+                app.start_autoplay(window, cx);
+                assert_eq!(app.autoplay_remaining, Some(10));
+            })
+            .unwrap();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        window
+            .update(cx, |app, _, cx| {
+                assert_eq!(app.autoplay_remaining, Some(9));
+                app.close_player_view(cx);
+                assert_eq!(app.autoplay_remaining, None);
+            })
+            .unwrap();
+        cx.executor().advance_clock(Duration::from_secs(15));
+        window
+            .update(cx, |app, _, _| {
+                assert_eq!(app.autoplay_remaining, None);
+                assert_eq!(app.playing_id, None);
+                assert_eq!(app.player.status().state, PlayState::Idle);
+            })
+            .unwrap();
+        window
+            .update(cx, |app, window, cx| {
+                app.player_open = true;
+                app.start_autoplay(window, cx);
+            })
+            .unwrap();
+        for remaining in (1..10).rev() {
+            cx.executor().advance_clock(Duration::from_secs(1));
+            window
+                .update(cx, |app, _, _| {
+                    assert_eq!(app.autoplay_remaining, Some(remaining));
+                    assert_eq!(app.playing_id, None);
+                })
+                .unwrap();
+        }
+        window
+            .update(cx, |app, _, cx| app.cancel_autoplay(cx))
+            .unwrap();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        window
+            .update(cx, |app, _, _| {
+                assert_eq!(app.autoplay_remaining, None);
+                assert_eq!(app.playing_id, None);
+            })
+            .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn autoplay_requires_the_playing_profile_and_a_successor(cx: &mut gpui_kit::TestAppContext) {
+        let window = autoplay_window(cx);
+        window
+            .update(cx, |app, window, cx| {
+                app.config.servers[0].profiles[0].autoplay_next = false;
+                app.start_autoplay(window, cx);
+                assert_eq!(app.autoplay_remaining, None);
+                app.config.servers[0].profiles[0].autoplay_next = true;
+                app.playing_profile = Some(("other-server".into(), "user".into()));
+                app.start_autoplay(window, cx);
+                assert_eq!(app.autoplay_remaining, None);
+                app.playing_profile = app.config.active.clone();
+                app.start_autoplay(window, cx);
+                assert_eq!(app.autoplay_remaining, Some(10));
+                app.config.active = Some(("server".into(), "other-user".into()));
+            })
+            .unwrap();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        window
+            .update(cx, |app, window, cx| {
+                assert_eq!(app.autoplay_remaining, None);
+                app.config.active = app.playing_profile.clone();
+                app.up_next = None;
+                app.start_autoplay(window, cx);
+                assert_eq!(app.autoplay_remaining, None);
+                assert_eq!(app.playing_id, None);
+            })
+            .unwrap();
+    }
+    #[gpui_kit::test]
+    fn autoplay_starts_the_successor_after_ten_seconds(cx: &mut gpui_kit::TestAppContext) {
+        let window = autoplay_window(cx);
+        window
+            .update(cx, |app, window, cx| app.start_autoplay(window, cx))
+            .unwrap();
+        for _ in 0..10 {
+            cx.executor().advance_clock(Duration::from_secs(1));
+        }
+        window
+            .update(cx, |app, _, _| {
+                assert_eq!(app.autoplay_remaining, None);
+                assert!(app.autoplay_task.is_none());
+                assert_eq!(app.playing_id.as_deref(), Some("next"));
+                app.player.stop();
+                app.player_poll = None;
+            })
+            .unwrap();
     }
 }

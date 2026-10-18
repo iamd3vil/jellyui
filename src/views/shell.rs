@@ -309,6 +309,14 @@ impl Jellyui {
         if self.session.is_some() {
             let handle = this.clone();
             items.push(
+                MenuItem::new("menu.autoplay", "Autoplay next episode")
+                    .checked(self.autoplay_enabled())
+                    .on_click(move |_, _, cx| {
+                        handle.update(cx, |this, cx| this.toggle_autoplay(cx)).ok();
+                    }),
+            );
+            let handle = this.clone();
+            items.push(
                 MenuItem::new("menu.signout", "Sign out").on_click(move |_, _, cx| {
                     handle.update(cx, |this, cx| this.sign_out(cx)).ok();
                 }),

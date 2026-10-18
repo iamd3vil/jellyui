@@ -463,6 +463,23 @@ impl Jellyui {
                         next.overview.clone().filter(|o| !o.is_empty()),
                         |el, text| el.child(div().text_color(dim).line_clamp(3).child(text)),
                     )
+                    .when_some(self.autoplay_remaining, |el, seconds| {
+                        el.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(12.))
+                                .child(format!("Next episode starts in {seconds}s"))
+                                .child(
+                                    Button::new("player.cancel-autoplay")
+                                        .variant(ButtonVariant::Secondary)
+                                        .label("Cancel autoplay")
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.cancel_autoplay(cx)),
+                                        ),
+                                ),
+                        )
+                    })
                     .child(
                         div().mt(px(6.)).flex().gap(px(10.)).child(
                             Button::new("player.play-next")

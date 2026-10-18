@@ -195,6 +195,7 @@ impl Jellyui {
                             name: auth.user.name.clone(),
                             token: auth.access_token.clone(),
                             image_tag: auth.user.primary_image_tag.clone(),
+                            autoplay_next: false,
                         };
                         this.add_profile(&server_id, profile, cx);
                     }
