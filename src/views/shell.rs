@@ -80,7 +80,9 @@ impl Jellyui {
         let fg = t.colors.sidebar_foreground;
         let is_home = matches!(self.page, Page::Home(_)) && self.history.is_empty();
         let current_library = match &self.page {
-            Page::Library(data) if self.history.is_empty() => Some(data.view.id.clone()),
+            Page::Library(data) if self.history.is_empty() => {
+                data.view.as_ref().map(|view| view.id.clone())
+            }
             _ => None,
         };
 
@@ -136,6 +138,17 @@ impl Jellyui {
                     let focus = this.search_input.read(cx).focus_handle(cx);
                     window.focus(&focus, cx);
                 })),
+        );
+
+        sidebar = sidebar.child(
+            SidebarItem::new("nav.favorites", "Favorites")
+                .collapsed(collapsed)
+                .selected(
+                    matches!(&self.page, Page::Library(data) if data.view.is_none())
+                        && self.history.is_empty(),
+                )
+                .icon(icon(LucideIcon::Heart, 16., fg))
+                .on_activate(cx.listener(|this, _, _, cx| this.open_favorites(cx))),
         );
 
         if !collapsed {

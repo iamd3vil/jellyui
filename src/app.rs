@@ -98,7 +98,7 @@ pub struct HomeData {
 }
 
 pub struct LibraryData {
-    pub view: Item,
+    pub view: Option<Item>,
     pub title: String,
     pub loading: bool,
     pub items: Vec<Item>,
@@ -445,6 +445,9 @@ impl Jellyui {
         if let Some(page) = self.history.pop() {
             self.page = page;
             self.next_generation();
+            if matches!(&self.page, Page::Library(data) if data.view.is_none()) {
+                self.load_page(cx);
+            }
             cx.notify();
         }
     }
@@ -460,8 +463,22 @@ impl Jellyui {
         self.history.clear();
         let title = view.name.clone();
         self.page = Page::Library(LibraryData {
-            view,
+            view: Some(view),
             title,
+            loading: true,
+            items: Vec::new(),
+            total: 0,
+            sort: "SortName",
+        });
+        self.load_page(cx);
+        cx.notify();
+    }
+
+    pub fn open_favorites(&mut self, cx: &mut Context<Self>) {
+        self.history.clear();
+        self.page = Page::Library(LibraryData {
+            view: None,
+            title: "Favorites".into(),
             loading: true,
             items: Vec::new(),
             total: 0,
@@ -475,7 +492,7 @@ impl Jellyui {
         let title = folder.name.clone();
         self.navigate(
             Page::Library(LibraryData {
-                view: folder,
+                view: Some(folder),
                 title,
                 loading: true,
                 items: Vec::new(),
@@ -584,7 +601,7 @@ impl Jellyui {
             return;
         }
         data.loading = true;
-        let query = library_query(&data.view, data.sort, data.items.len());
+        let query = library_query(data.view.as_ref(), data.sort, data.items.len());
         let generation = self.generation;
         self.fetch(
             cx,
@@ -674,7 +691,7 @@ impl Jellyui {
             }
             Page::Library(data) => {
                 data.loading = true;
-                let query = library_query(&data.view, data.sort, 0);
+                let query = library_query(data.view.as_ref(), data.sort, 0);
                 self.fetch(
                     cx,
                     move |client| client.items(&query),
@@ -1128,15 +1145,17 @@ fn next_episode_of(client: &Client, item: &Item) -> Option<Item> {
         .flatten()
 }
 
-pub fn library_query(view: &Item, sort: &str, start: usize) -> ItemQuery {
-    let include_types = match view.collection_type.as_deref() {
+pub fn library_query(view: Option<&Item>, sort: &str, start: usize) -> ItemQuery {
+    let include_types = match view.and_then(|v| v.collection_type.as_deref()) {
         Some("movies") => vec!["Movie".to_string()],
         Some("tvshows") => vec!["Series".to_string()],
+        _ if view.is_none() => vec!["Movie".into(), "Series".into(), "Episode".into()],
         _ => Vec::new(),
     };
     let recursive = !include_types.is_empty();
     ItemQuery {
-        parent_id: Some(view.id.clone()),
+        parent_id: view.map(|v| v.id.clone()),
+        filters: view.is_none().then(|| "IsFavorite".into()),
         include_types,
         recursive: Some(recursive),
         sort_by: Some(sort.to_string()),
@@ -1172,5 +1191,33 @@ impl Render for Jellyui {
             .line_height(px(20.))
             .child(content)
             .child(self.toasts.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn favorites_query_is_global_and_paginated() {
+        let q = library_query(None, "DateCreated", PAGE_SIZE);
+        assert_eq!(q.parent_id, None);
+        assert_eq!(q.filters.as_deref(), Some("IsFavorite"));
+        assert_eq!(q.include_types, ["Movie", "Series", "Episode"]);
+        assert_eq!(q.recursive, Some(true));
+        assert_eq!(q.start, Some(PAGE_SIZE));
+        assert_eq!(q.limit, Some(PAGE_SIZE));
+        assert_eq!(q.sort_order.as_deref(), Some("Descending"));
+
+        let view = Item {
+            id: "movies".into(),
+            collection_type: Some("movies".into()),
+            ..Default::default()
+        };
+        let q = library_query(Some(&view), "SortName", 0);
+        assert_eq!(q.parent_id.as_deref(), Some("movies"));
+        assert_eq!(q.filters, None);
+        assert_eq!(q.include_types, ["Movie"]);
+        assert_eq!(q.sort_order.as_deref(), Some("Ascending"));
     }
 }

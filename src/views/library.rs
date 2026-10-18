@@ -27,10 +27,12 @@ impl Jellyui {
             return div();
         };
         let t = UiTheme::read(cx).clone();
-        let is_media_library = matches!(
-            data.view.collection_type.as_deref(),
-            Some("movies") | Some("tvshows")
-        );
+        let is_media_library = data.view.as_ref().is_none_or(|view| {
+            matches!(
+                view.collection_type.as_deref(),
+                Some("movies") | Some("tvshows")
+            )
+        });
 
         let header = div()
             .px(px(28.))
@@ -89,8 +91,16 @@ impl Jellyui {
             )
         } else if data.items.is_empty() {
             empty_state(
-                "Empty library",
-                "No items were returned for this library.",
+                if data.view.is_none() {
+                    "No favorites yet"
+                } else {
+                    "Empty library"
+                },
+                if data.view.is_none() {
+                    "Favorite a movie, show or episode to find it here."
+                } else {
+                    "No items were returned for this library."
+                },
                 cx,
             )
         } else {
